@@ -85,12 +85,22 @@ bool write_stats_json(const std::string& path, const Model& model, const Solutio
 /// Round-trips via read_mps: dimensions, nonzeros at full precision, bounds and integrality
 /// are all recovered exactly.
 ///
+/// Limitation: neither MPS nor LP can express a free constraint (no finite bound on either
+/// side). Free rows are written as extra N rows in MPS, but MPS readers universally drop all
+/// N rows except the first (the objective). A warning is printed to stderr with the count.
+/// Presolve removes free rows before they reach write_presolved, so this affects only raw
+/// models that carry them.
+///
 /// Returns false and fills `error` on an I/O failure.
 bool write_mps(const std::string& path, const Model& model, std::string* error);
 
 /// Write the model in CPLEX LP dialect. Ranged rows use the `lo <= expr <= hi` syntax the
-/// reader accepts. LP files cannot encode the quadratic objective at double precision through
-/// the reader (the reader rejects `[ ... ] / 2` today); for QP models use write_mps instead.
+/// reader accepts.
+///
+/// Limitation: LP files cannot encode a quadratic objective (the reader rejects `[ ... ] / 2`
+/// today); returns false with an error message when `model.has_quadratic_objective()`. Use
+/// write_mps for QP models. Free rows are skipped (no LP syntax for them); a warning is
+/// printed to stderr with the count.
 ///
 /// Returns false and fills `error` on an I/O failure.
 bool write_lp(const std::string& path, const Model& model, std::string* error);

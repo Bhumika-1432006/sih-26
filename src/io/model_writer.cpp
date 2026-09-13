@@ -14,6 +14,7 @@
 // close correspondence; a change to either side should touch both.
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -24,6 +25,7 @@
 
 #include "sankhya/io.hpp"
 #include "sankhya/model.hpp"
+#include "sankhya/sparse.hpp"
 #include "sankhya/types.hpp"
 
 namespace sankhya::io {
@@ -43,8 +45,8 @@ namespace {
   return fmt::format("R{}", i);
 }
 
-/// Shortest exact decimal representation for a double that round-trips bit-for-bit.
-/// See writer.cpp for why this is 17 significant digits and not negotiable.
+/// Round-trip-safe decimal representation (17 significant digits guarantees bit-for-bit
+/// round-trip for any IEEE 754 double; fmt's default {} gives the shortest such repr).
 [[nodiscard]] std::string xfmt(double v) {
   if (v == kInfinity) return "inf";
   if (v == -kInfinity) return "-inf";
@@ -131,6 +133,19 @@ bool write_mps(const std::string& path, const Model& model, std::string* error) 
   const Index m = model.num_rows();
   const Index n = model.num_cols();
   const std::string obj_row = pick_obj_row(model);
+
+  // MPS convention treats every N row beyond the objective as a free row and readers drop
+  // them (mps_reader.cpp). Warn so the caller knows the round-trip loses these rows.
+  Index n_free_mps = 0;
+  for (Index i = 0; i < m; ++i) {
+    if (mps_kind(model, i) == MpsRowKind::kFree) ++n_free_mps;
+  }
+  if (n_free_mps > 0) {
+    fmt::print(stderr,
+               "write_mps: warning: dropped {} free row(s), which neither MPS nor "
+               "LP format can express\n",
+               n_free_mps);
+  }
 
   // ---- NAME ----
   fmt::print(out, "NAME          {}\n", model.name.empty() ? "UNNAMED" : model.name);
@@ -368,6 +383,12 @@ bool write_mps(const std::string& path, const Model& model, std::string* error) 
 // -----------------------------------------------------------------------------------------
 
 bool write_lp(const std::string& path, const Model& model, std::string* error) {
+  if (model.has_quadratic_objective()) {
+    if (error != nullptr)
+      *error = "the LP writer cannot encode a quadratic objective; use write_mps instead";
+    return false;
+  }
+
   std::FILE* out = std::fopen(path.c_str(), "wb");
   if (out == nullptr) {
     if (error != nullptr) *error = fmt::format("{}: cannot open for writing", path);
@@ -376,6 +397,19 @@ bool write_lp(const std::string& path, const Model& model, std::string* error) {
 
   const Index m = model.num_rows();
   const Index n = model.num_cols();
+
+  // Count and warn about free rows; they have no LP syntax and are silently skipped.
+  Index n_free_lp = 0;
+  for (Index i = 0; i < m; ++i) {
+    const auto u = static_cast<std::size_t>(i);
+    if (model.row_lower[u] == -kInfinity && model.row_upper[u] == kInfinity) ++n_free_lp;
+  }
+  if (n_free_lp > 0) {
+    fmt::print(stderr,
+               "write_lp: warning: dropped {} free row(s), which neither MPS nor "
+               "LP format can express\n",
+               n_free_lp);
+  }
 
   // ---- Objective ----
   fmt::print(out, "{}\n", model.sense == ObjSense::kMaximize ? "Maximize" : "Minimize");
@@ -403,6 +437,10 @@ bool write_lp(const std::string& path, const Model& model, std::string* error) {
   }
 
   // ---- Subject To ----
+  // Build a CSR (row-major) view once so the constraint loop is O(m + nnz), not
+  // O(m * nnz) as it would be if we scanned every CSC column for each row.
+  const CsrView by_row(model.matrix);
+
   fmt::print(out, "Subject To\n");
   for (Index i = 0; i < m; ++i) {
     const auto u = static_cast<std::size_t>(i);
@@ -414,18 +452,12 @@ bool write_lp(const std::string& path, const Model& model, std::string* error) {
 
     const std::string rname = row_nm(model, i);
 
-    // Build expression: iterate over nonzeros in row i.
-    // The matrix is column-compressed (CSC), so we iterate over all columns.
+    // Build expression using the row view; column indices are in rv.rows[k].
     std::string expr;
     bool first = true;
-    for (Index j = 0; j < n; ++j) {
-      const ColumnView cv = model.matrix.column(j);
-      for (Index k = 0; k < cv.size; ++k) {
-        if (cv.rows[k] == i) {
-          append_lp_term(expr, cv.values[k], col_nm(model, j), first);
-          break;
-        }
-      }
+    const ColumnView rv = by_row.row(i);
+    for (Index k = 0; k < rv.size; ++k) {
+      append_lp_term(expr, rv.values[k], col_nm(model, rv.rows[k]), first);
     }
     if (expr.empty()) expr = "0";
 
