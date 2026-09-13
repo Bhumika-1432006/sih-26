@@ -413,6 +413,15 @@ const std::vector<OptionSpec>& Options::registry() {
                  {},
                  /*planned_for=*/std::string(""),
                  /*case_sensitive=*/true});
+    s.push_back({"compute_iis",
+                 OptionType::Bool,
+                 true,
+                 "When the model is infeasible and a Farkas certificate was produced, run the "
+                 "Chinneck-Dravnieks deletion filter to find the irreducible infeasible "
+                 "subsystem (#217). Disable to skip the extra re-solves.",
+                 0.0,
+                 0.0,
+                 {}});
     return s;
   }();
   return specs;

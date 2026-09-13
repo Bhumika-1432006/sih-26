@@ -1,0 +1,191 @@
+// SPDX-License-Identifier: Apache-2.0
+// SANKHYA - IIS deletion filter.
+//
+// Reference: Chinneck, J.W. and Dravnieks, E.W., "Locating minimal infeasible constraint
+// sets in linear programs", ORSA Journal on Computing 3(2) (1991), pp. 157-168.
+//
+// The algorithm is O(k) solves where k is the cardinality of the Farkas certificate support
+// (the rows and column bounds the engine named). In practice k << m, so each re-solve is on
+// a small, quickly-decided infeasible system.
+
+#include "core/iis.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <vector>
+
+#include <fmt/format.h>
+
+#include "sankhya/model.hpp"
+#include "sankhya/options.hpp"
+#include "sankhya/sparse.hpp"
+#include "sankhya/tolerances.hpp"
+#include "sankhya/types.hpp"
+
+namespace sankhya {
+
+void compute_iis(const Model& model, Solution* solution, const Options& options,
+                 Logger& logger) {
+  if (solution->status != SolveStatus::kInfeasible) return;
+  if (solution->farkas_dual.empty()) return;
+  if (!options.get_bool("compute_iis")) return;
+
+  const Index m = model.num_rows();
+  const Index n = model.num_cols();
+  const std::vector<double>& y = solution->farkas_dual;
+
+  // --- Step 1: identify candidate constraints from the Farkas certificate support ---------
+  //
+  // A multiplier y_i != 0 means row i's bound contributes to the aggregate S = sum y_i * b_i.
+  // The column aggregate d = A'y determines which column bounds bound M = max d.x from above.
+  // A candidate column lower bound j requires d[j] < 0 and col_lower[j] > -inf.
+  // A candidate column upper bound j requires d[j] > 0 and col_upper[j] < +inf.
+
+  std::vector<double> d(static_cast<std::size_t>(n), 0.0);
+  double scale = 0.0;
+  for (Index j = 0; j < n; ++j) {
+    const ColumnView col = model.matrix.column(j);
+    for (Index k = 0; k < col.size; ++k) {
+      const double term = col.values[k] * y[static_cast<std::size_t>(col.rows[k])];
+      d[static_cast<std::size_t>(j)] += term;
+      scale = std::max(scale, std::fabs(term));
+    }
+  }
+  const double threshold = tol::kZeroDrop * std::max(1.0, scale);
+
+  std::vector<bool> row_in(static_cast<std::size_t>(m), false);
+  std::vector<bool> col_lo_in(static_cast<std::size_t>(n), false);
+  std::vector<bool> col_hi_in(static_cast<std::size_t>(n), false);
+
+  Index k_rows = 0;
+  Index k_cols = 0;
+  for (Index i = 0; i < m; ++i) {
+    if (y[static_cast<std::size_t>(i)] != 0.0) {
+      row_in[static_cast<std::size_t>(i)] = true;
+      ++k_rows;
+    }
+  }
+  for (Index j = 0; j < n; ++j) {
+    const auto u = static_cast<std::size_t>(j);
+    if (d[u] < -threshold && is_finite_bound(model.col_lower[u])) {
+      col_lo_in[u] = true;
+      ++k_cols;
+    }
+    if (d[u] > threshold && is_finite_bound(model.col_upper[u])) {
+      col_hi_in[u] = true;
+      ++k_cols;
+    }
+  }
+
+  logger.info("IIS: deletion filter on {} row(s) and {} bound(s) from the Farkas certificate",
+              k_rows, k_cols);
+
+  // --- Step 2: build the restricted sub-model (only candidates active) -------------------
+  //
+  // The Farkas certificate proves that the candidate constraints alone are infeasible. Free
+  // all non-candidates so that subsequent re-solves test only the candidates.
+
+  Model sub = model;
+  for (Index i = 0; i < m; ++i) {
+    if (!row_in[static_cast<std::size_t>(i)]) {
+      sub.row_lower[static_cast<std::size_t>(i)] = -kInfinity;
+      sub.row_upper[static_cast<std::size_t>(i)] = +kInfinity;
+    }
+  }
+  for (Index j = 0; j < n; ++j) {
+    const auto u = static_cast<std::size_t>(j);
+    if (!col_lo_in[u]) sub.col_lower[u] = -kInfinity;
+    if (!col_hi_in[u]) sub.col_upper[u] = +kInfinity;
+  }
+
+  // Sub-options: suppress logging, disable IIS recursion, use the dual simplex (fastest at
+  // proving infeasibility from a dual-feasible start), disable presolve (the sub-model has
+  // few rows and simple structure).
+  Options sub_opts = options;
+  sub_opts.set_bool("compute_iis", false);
+  sub_opts.set_bool("log_to_console", false);
+  sub_opts.set_string("algorithm", "dual-simplex");
+  sub_opts.set_bool("presolve", false);
+  // Each sub-solve is on a tiny system; cap at 5 s to avoid hanging on pathological models.
+  const double parent_limit = options.get_double("time_limit");
+  const double sub_limit =
+      (parent_limit > 0.0 && std::isfinite(parent_limit)) ? std::min(parent_limit, 5.0) : 5.0;
+  sub_opts.set_double("time_limit", sub_limit);
+
+  // --- Step 3: deletion filter -----------------------------------------------------------
+  //
+  // For each candidate, free it in the current working sub-model and re-solve. If still
+  // infeasible the candidate is redundant (drop it permanently). If feasible the candidate
+  // is necessary (restore it in the working model).
+
+  // Row candidates.
+  for (Index i = 0; i < m; ++i) {
+    const auto u = static_cast<std::size_t>(i);
+    if (!row_in[u]) continue;
+
+    // Trial: free row i.
+    const double saved_lo = sub.row_lower[u];
+    const double saved_hi = sub.row_upper[u];
+    sub.row_lower[u] = -kInfinity;
+    sub.row_upper[u] = +kInfinity;
+
+    const Solution trial = solve(sub, sub_opts);
+    if (trial.status == SolveStatus::kInfeasible) {
+      // Row i is redundant: keep it freed in the working model.
+      row_in[u] = false;
+    } else {
+      // Row i is necessary: restore it.
+      sub.row_lower[u] = saved_lo;
+      sub.row_upper[u] = saved_hi;
+    }
+  }
+
+  // Column lower bound candidates.
+  for (Index j = 0; j < n; ++j) {
+    const auto u = static_cast<std::size_t>(j);
+    if (!col_lo_in[u]) continue;
+
+    const double saved_lo = sub.col_lower[u];
+    sub.col_lower[u] = -kInfinity;
+
+    const Solution trial = solve(sub, sub_opts);
+    if (trial.status == SolveStatus::kInfeasible) {
+      col_lo_in[u] = false;
+    } else {
+      sub.col_lower[u] = saved_lo;
+    }
+  }
+
+  // Column upper bound candidates.
+  for (Index j = 0; j < n; ++j) {
+    const auto u = static_cast<std::size_t>(j);
+    if (!col_hi_in[u]) continue;
+
+    const double saved_hi = sub.col_upper[u];
+    sub.col_upper[u] = +kInfinity;
+
+    const Solution trial = solve(sub, sub_opts);
+    if (trial.status == SolveStatus::kInfeasible) {
+      col_hi_in[u] = false;
+    } else {
+      sub.col_upper[u] = saved_hi;
+    }
+  }
+
+  // --- Step 4: collect and report --------------------------------------------------------
+
+  for (Index i = 0; i < m; ++i) {
+    if (row_in[static_cast<std::size_t>(i)]) solution->iis_rows.push_back(i);
+  }
+  for (Index j = 0; j < n; ++j) {
+    const auto u = static_cast<std::size_t>(j);
+    if (col_lo_in[u]) solution->iis_col_lo.push_back(j);
+    if (col_hi_in[u]) solution->iis_col_hi.push_back(j);
+  }
+
+  logger.info("IIS: {} row(s), {} lower bound(s), {} upper bound(s) are irreducible",
+              solution->iis_rows.size(), solution->iis_col_lo.size(),
+              solution->iis_col_hi.size());
+}
+
+}  // namespace sankhya

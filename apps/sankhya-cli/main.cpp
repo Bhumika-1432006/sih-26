@@ -262,6 +262,39 @@ int main(int argc, char** argv) {
     fmt::print("{:<22}{:.3e}\n", "dual infeasibility", solution.dual_infeasibility);
     if (!solution.message.empty()) fmt::print("{:<22}{}\n", "message", solution.message);
 
+    // IIS message: "infeasible; the smallest set of constraints that cannot hold together
+    // is ..." - the industrial diagnosis a planner reads first (#217).
+    if (!solution.iis_rows.empty() || !solution.iis_col_lo.empty() ||
+        !solution.iis_col_hi.empty()) {
+      const auto& m_ref = model;
+      std::string iis_msg;
+      const auto row_nm = [&](sankhya::Index i) -> std::string {
+        const auto u = static_cast<std::size_t>(i);
+        return (u < m_ref.row_names.size() && !m_ref.row_names[u].empty()) ? m_ref.row_names[u]
+               : fmt::format("R{}", i);
+      };
+      const auto col_nm = [&](sankhya::Index j) -> std::string {
+        const auto u = static_cast<std::size_t>(j);
+        return (u < m_ref.col_names.size() && !m_ref.col_names[u].empty()) ? m_ref.col_names[u]
+               : fmt::format("C{}", j);
+      };
+      for (const sankhya::Index i : solution.iis_rows) {
+        if (!iis_msg.empty()) iis_msg += ", ";
+        iis_msg += row_nm(i);
+      }
+      for (const sankhya::Index j : solution.iis_col_lo) {
+        if (!iis_msg.empty()) iis_msg += ", ";
+        iis_msg += fmt::format("lower bound on {}", col_nm(j));
+      }
+      for (const sankhya::Index j : solution.iis_col_hi) {
+        if (!iis_msg.empty()) iis_msg += ", ";
+        iis_msg += fmt::format("upper bound on {}", col_nm(j));
+      }
+      fmt::print("{:<22}{}\n", "IIS",
+                 fmt::format("the smallest set of constraints that cannot hold together is: {}",
+                             iis_msg));
+    }
+
     std::string error;
     if (!solution_path.empty() &&
         !sankhya::io::write_solution(solution_path, model, solution, options, &error)) {

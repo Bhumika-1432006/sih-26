@@ -28,6 +28,7 @@ add_executable(sankhya_tests
   unit/test_ldl.cpp
   unit/test_ipm.cpp
   unit/test_writer.cpp
+  unit/test_iis.cpp
   unit/test_pdhg.cpp
   unit/test_qp.cpp
   unit/test_branch_and_bound.cpp

@@ -183,6 +183,32 @@ bool write_solution(const std::string& path, const Model& model, const Solution&
       }
       fmt::print(out, "end farkas\n");
     }
+
+    // IIS section (#217). Lists the irreducible infeasible subsystem by name so that the
+    // diagnosis is human-readable without writing row indices that shift when a model is
+    // edited. Format: each line is `kind name` where kind is row, col_lo or col_hi.
+    if (!solution.iis_rows.empty() || !solution.iis_col_lo.empty() ||
+        !solution.iis_col_hi.empty()) {
+      const Index iis_count = static_cast<Index>(solution.iis_rows.size()) +
+                              static_cast<Index>(solution.iis_col_lo.size()) +
+                              static_cast<Index>(solution.iis_col_hi.size());
+      fmt::print(out,
+                 "\n# Irreducible infeasible subsystem: the smallest set of constraints\n"
+                 "# that cannot all hold. Removing any one of them makes the model feasible.\n"
+                 "# Computed by the Chinneck-Dravnieks deletion filter (#217).\n");
+      fmt::print(out, "begin iis {}\n", iis_count);
+      for (const Index i : solution.iis_rows) {
+        fmt::print(out, "row {}\n", quoted_name(row_name(model, i)));
+      }
+      for (const Index j : solution.iis_col_lo) {
+        fmt::print(out, "col_lo {}\n", quoted_name(column_name(model, j)));
+      }
+      for (const Index j : solution.iis_col_hi) {
+        fmt::print(out, "col_hi {}\n", quoted_name(column_name(model, j)));
+      }
+      fmt::print(out, "end iis\n");
+    }
+
     const bool closed = std::fclose(out) == 0;
     if (!closed && error != nullptr) *error = fmt::format("{}: write failed", path);
     return closed;
