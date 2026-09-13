@@ -211,7 +211,7 @@ TEST(SparseLdl, NormalEquationsMatchTheDenseProduct) {
   std::vector<double> theta(static_cast<std::size_t>(n));
   for (auto& t : theta) t = 0.1 + unit(rng);
   SparseMatrix lower;
-  normal_equations_lower(a, theta, {}, 0.5, &lower);
+  ASSERT_TRUE(normal_equations_lower(a, theta, {}, 0.5, &lower));
   ASSERT_EQ(lower.num_rows(), m);
   ASSERT_EQ(lower.num_cols(), m);
   double worst = 0.0;
@@ -229,6 +229,44 @@ TEST(SparseLdl, NormalEquationsMatchTheDenseProduct) {
     for (Index i = 0; i < j; ++i) EXPECT_EQ(lower.at(i, j), 0.0);
   }
   EXPECT_LT(worst, 1e-12);
+}
+
+TEST(SparseLdl, TheOrderingIsAPermutationAndATridiagonalMatrixFillsNothing) {
+  // #193 replaced the explicit-clique minimum degree with AMD on the quotient graph. Two
+  // things the replacement must keep: the output is a permutation (every index once), and
+  // a matrix with no fill under the natural order gets no fill from the ordering either -
+  // a tridiagonal matrix's factor has exactly n-1 strictly-lower entries, and any ordering
+  // that produces more has invented work. Both are checked at a size where an O(n^2) scan
+  // per step would still pass, so this is a correctness pin, not the speed claim; the speed
+  // claim is measured by the scale runner and quoted from its CSV.
+  const Index n = 2000;
+  SparseMatrix lower;
+  lower.reset(n, n);
+  for (Index i = 0; i < n; ++i) {
+    lower.add_entry(i, i, 4.0);
+    if (i + 1 < n) lower.add_entry(i + 1, i, -1.0);
+  }
+  lower.finalize(0.0);
+  SparseLdl ldl;
+  ASSERT_TRUE(ldl.analyze(lower));
+  const std::vector<Index>& perm = ldl.permutation();
+  ASSERT_EQ(static_cast<Index>(perm.size()), n);
+  std::vector<bool> seen(static_cast<std::size_t>(n), false);
+  for (const Index p : perm) {
+    ASSERT_GE(p, 0);
+    ASSERT_LT(p, n);
+    ASSERT_FALSE(seen[static_cast<std::size_t>(p)]) << "index " << p << " ordered twice";
+    seen[static_cast<std::size_t>(p)] = true;
+  }
+  EXPECT_EQ(ldl.factor_nonzeros(), n - 1) << "a tridiagonal matrix must not fill";
+  ASSERT_TRUE(ldl.factorize(lower, 0.0));
+  std::vector<double> rhs(static_cast<std::size_t>(n), 1.0);
+  ldl.solve(rhs.data());
+  // (4, -1) tridiagonal: the solution of A x = 1 is bounded and strictly positive.
+  for (const double v : rhs) {
+    EXPECT_GT(v, 0.0);
+    EXPECT_LT(v, 1.0);
+  }
 }
 
 TEST(SparseLdl, ADeadlineStopsTheOrderingAndSaysSoWasWhy) {
@@ -254,6 +292,44 @@ TEST(SparseLdl, ADeadlineStopsTheOrderingAndSaysSoWasWhy) {
   empty.finalize();
   ASSERT_FALSE(unwanted.analyze(empty));
   EXPECT_FALSE(unwanted.stopped_early()) << "a bad matrix is not a deadline";
+}
+
+TEST(SparseLdl, ADeadlineStopsTheAssemblyOfTheNormalEquationsToo) {
+  // #232: the polish's clock reached the ordering (#197) and not the step before it. On the
+  // random scale family at 500,000 rows, forming A Theta A^T took 90 s against a budget of
+  // 30, all of it before analyze() could consult the deadline. So the assembly takes the
+  // same deadline, checked every 256 rows: with one that fires it returns false at once,
+  // and with one that never fires it returns true and produces exactly what it produces
+  // with no deadline at all.
+  std::mt19937_64 rng(232);
+  std::uniform_real_distribution<double> value(-3.0, 3.0);
+  std::uniform_int_distribution<Index> pick_row(0, 599);
+  const Index m = 600;
+  const Index n = 800;
+  SparseMatrix a(m, n);
+  for (Index j = 0; j < n; ++j) {
+    for (int k = 0; k < 5; ++k) a.add_entry(pick_row(rng), j, value(rng));
+  }
+  a.finalize(0.0);
+  std::vector<double> theta(static_cast<std::size_t>(n), 0.7);
+
+  SparseMatrix abandoned;
+  EXPECT_FALSE(normal_equations_lower(a, theta, {}, 0.5, &abandoned, [] { return true; }));
+
+  SparseMatrix plain;
+  SparseMatrix with_deadline;
+  ASSERT_TRUE(normal_equations_lower(a, theta, {}, 0.5, &plain));
+  ASSERT_TRUE(normal_equations_lower(a, theta, {}, 0.5, &with_deadline, [] { return false; }));
+  ASSERT_EQ(plain.num_nonzeros(), with_deadline.num_nonzeros());
+  for (Index j = 0; j < m; ++j) {
+    const ColumnView p = plain.column(j);
+    const ColumnView d = with_deadline.column(j);
+    ASSERT_EQ(p.size, d.size);
+    for (Index k = 0; k < p.size; ++k) {
+      EXPECT_EQ(p.rows[k], d.rows[k]);
+      EXPECT_EQ(p.values[k], d.values[k]);
+    }
+  }
 }
 
 TEST(SparseLdl, ADeadlineNeverAskedIsADeadlineThatChangesNothing) {

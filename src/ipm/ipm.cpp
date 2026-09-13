@@ -72,6 +72,22 @@ constexpr double kIpmComplementarity = 1e-8;
 constexpr double kIpmGap = 1e-8;
 /// Primal regularization rho added to every Theta^-1 (Altman & Gondzio): holds free
 /// variables and keeps Theta finite as a slack goes to zero.
+/// THE BARRIER'S LAST WORD (#209). Near the solution theta = 1 / (z/s) spans the gap between
+/// the variables at bounds (z/s -> infinity) and the basic ones (z/s -> 0), and past some
+/// point the normal equations A theta A^T are singular to working precision whatever the
+/// regularization: on the 20,000-row staircase model the factorization went from 9
+/// regularized pivots to 5,090 in one step, at a relative gap of 1.0e-07, and the direction
+/// it produced was NaN (#205 kept the answer; this keeps the method from asking). A jump of
+/// this size in one factorization, while the iterate is already within one decade of every
+/// convergence tolerance, means the method has reached the resolution the barrier has left
+/// - Mehrotra-type codes treat it as termination, and so does this one: the iterate in hand
+/// is reported as converged, and the status guard in solve() measures it against the
+/// project's tolerances like every other optimal claim. Wright, *Primal-Dual Interior-Point
+/// Methods* (1997), chapter 11.
+constexpr double kBarrierExhaustedSlack = 10.0;  ///< within this factor of each tolerance
+constexpr Count kBarrierExhaustedPivots = 64;    ///< at least this many pivots regularized...
+constexpr double kBarrierExhaustedFraction = 0.01;  ///< ...or this fraction of the rows
+
 constexpr double kPrimalRegularization = 1e-8;
 /// Dual regularization delta on the diagonal of the normal equations, and the pivot floor
 /// the factorization enforces.
@@ -86,8 +102,8 @@ constexpr int kRuizIterations = 10;
 class InteriorPoint {
  public:
   InteriorPoint(const Model& model, const Options& options, Logger& logger,
-                const WarmStart* warm = nullptr)
-      : model_(model), options_(options), logger_(logger), warm_(warm) {}
+                const WarmStart* warm = nullptr, const Timer* clock = nullptr)
+      : model_(model), options_(options), logger_(logger), warm_(warm), clock_(clock) {}
 
   Solution run();
 
@@ -100,6 +116,10 @@ class InteriorPoint {
   /// The deadline handed down to the linear algebra, so a time limit is not defeated by one
   /// very long ordering or factorization (#193). Empty when there is no limit.
   SparseLdl::ShouldStop should_stop_;
+  /// Set when the deadline fired inside normal_equations_lower(), which the factorization
+  /// never got to see - run() reads it beside ldl_.stopped_early() to report a time limit
+  /// rather than a numerical failure (#232).
+  bool assembly_stopped_ = false;
   void newton_direction();
   [[nodiscard]] double step_length(const std::vector<double>& s, const std::vector<double>& ds,
                                    const std::vector<double>& t,
@@ -126,6 +146,10 @@ class InteriorPoint {
   const Options& options_;
   Logger& logger_;
   const WarmStart* warm_ = nullptr;
+  /// The clock the time limit is measured on. solve_scaled() starts it BEFORE scaling and
+  /// copying the model, which on a 500,000-row polish is tens of seconds that run()'s own
+  /// timer never saw (#232); null means run() keeps its own.
+  const Timer* clock_ = nullptr;
   /// With a warm start only: the factor the ordering predicts is compared with
   /// polish_max_factor_nonzeros, and factorize() sets this instead of building it.
   std::int64_t max_factor_nonzeros_ = -1;
@@ -469,10 +493,22 @@ bool InteriorPoint::factorize() {
       row_shift[static_cast<std::size_t>(k - n_)] = theta_[u];
     }
   }
-  normal_equations_lower(model_.matrix, theta_x, row_shift, kDualRegularization,
-                         &normal_lower_);
+  if (!normal_equations_lower(model_.matrix, theta_x, row_shift, kDualRegularization,
+                              &normal_lower_, should_stop_)) {
+    assembly_stopped_ = true;
+    return false;
+  }
   if (!analyzed_) {
+    logger_.verbose("interior point: normal equations assembled ({} nonzeros) at {:.2f}s",
+                    normal_lower_.num_nonzeros(),
+                    clock_ != nullptr ? clock_->elapsed_seconds() : -1.0);
+    Timer ordering_clock;
     if (!ldl_.analyze(normal_lower_, should_stop_)) return false;
+    logger_.verbose(
+        "interior point: normal equations {} nonzeros, ordered and analysed in "
+        "{:.2f}s, factor {} nonzeros",
+        normal_lower_.num_nonzeros(), ordering_clock.elapsed_seconds(),
+        ldl_.factor_nonzeros() + ldl_.dimension());
     analyzed_ = true;
     // The ordering knows the factor's size before a single entry of it exists. A polish
     // that would need a 9-million-nonzero factor for a 7,000-row random-family model (#193)
@@ -638,7 +674,8 @@ Solution InteriorPoint::finish(SolveStatus status, const std::string& message, C
 }
 
 Solution InteriorPoint::run() {
-  Timer timer;
+  Timer own_clock;
+  const Timer& timer = clock_ != nullptr ? *clock_ : own_clock;
   const double time_limit = options_.get_double("time_limit");
   // Handed to the linear algebra so the clock is not only consulted between iterations.
   // Captured by reference to the local timer, which outlives every call that uses it.
@@ -648,6 +685,16 @@ Solution InteriorPoint::run() {
   const std::int64_t iteration_limit = options_.get_int("iteration_limit");
   if (warm_ != nullptr) max_factor_nonzeros_ = options_.get_int("polish_max_factor_nonzeros");
   build();
+  logger_.verbose("interior point: built in {:.2f}s from the start of the solve",
+                  timer.elapsed_seconds());
+  // A polish arrives with most of its budget spent by the first-order phase; a build that
+  // already used the rest must not go on to assemble and order for nothing (#232).
+  if (should_stop_ && should_stop_()) {
+    return finish(
+        SolveStatus::kTimeLimit,
+        fmt::format("time limit {:g}s reached before the first iteration", time_limit), 0,
+        timer.elapsed_seconds());
+  }
   logger_.info("Interior point: {} rows, {} columns, {} nonzeros", m_, n_,
                model_.num_nonzeros());
   logger_.begin_iteration_table();
@@ -738,17 +785,49 @@ Solution InteriorPoint::run() {
       }
       // Told to stop rather than unable to: the difference matters to a reader, and to the
       // status guard. Neither is a point, but only one of them is a failure.
-      if (ldl_.stopped_early()) {
+      if (ldl_.stopped_early() || assembly_stopped_) {
         restore_best();
-        return finish(SolveStatus::kTimeLimit,
-                      fmt::format("time limit {:g}s reached inside the factorization, which "
-                                  "was abandoned",
-                                  time_limit),
-                      iterations, timer.elapsed_seconds());
+        return finish(
+            SolveStatus::kTimeLimit,
+            fmt::format(
+                "time limit {:g}s reached inside the {}, which was abandoned", time_limit,
+                assembly_stopped_ ? "assembly of the normal equations" : "factorization"),
+            iterations, timer.elapsed_seconds());
       }
       return finish(SolveStatus::kNumericalError,
                     "the normal equations could not be factorized", iterations,
                     timer.elapsed_seconds());
+    }
+
+    // THE BARRIER'S LAST WORD (#209, and the constants above). On the 20,000-row staircase
+    // model the factorization at a relative gap of 4e-8 had to regularize 2,199 of 18,227
+    // pivots where the one before regularized 6, and the direction it produced was NaN. A
+    // spike like that at an iterate within a decade of every tolerance is the matrix saying
+    // the barrier is gone: the columns pinned to their bounds have left the normal equations
+    // and what remains is rank deficient at working precision. Capping z/s was tried and
+    // changes nothing - the capped factorization regularizes 2,194 and its step is NaN too -
+    // because the deficiency is in the rank of the active columns, not in their weights. So
+    // the iterate measured at the top of this loop is the answer, reported as converged and
+    // measured by the status guard in solve() against the project's tolerances like every
+    // other optimal claim; on that model the guard finds its dual side 12% over the 1e-7
+    // tolerance and reports it feasible at a relative error of 1.4e-8, which is what it is.
+    {
+      const Count regularized_now = ldl_.regularized_pivots();
+      const auto spike_threshold = std::max<Count>(
+          kBarrierExhaustedPivots,
+          static_cast<Count>(kBarrierExhaustedFraction * static_cast<double>(m_)));
+      const bool nearly_converged =
+          primal_infeasibility_ <= kBarrierExhaustedSlack * kIpmTolerance &&
+          dual_infeasibility_ <= kBarrierExhaustedSlack * kIpmTolerance &&
+          relative_gap <= kBarrierExhaustedSlack * kIpmGap &&
+          max_product_ <= kBarrierExhaustedSlack * kIpmComplementarity;
+      if (regularized_now >= spike_threshold && nearly_converged) {
+        return finish(SolveStatus::kOptimal,
+                      fmt::format("converged at a relative gap of {:.1e} when the barrier "
+                                  "vanished: {} of {} pivots regularized in one factorization",
+                                  relative_gap, regularized_now, m_),
+                      iterations, timer.elapsed_seconds());
+      }
     }
 
     // PREDICTOR: the affine-scaling direction (mu-terms = -s z).
@@ -828,11 +907,15 @@ Solution InteriorPoint::run() {
 /// x = Dc xhat, y = Dr yhat, d = Dc^-1 dhat (la/scaling.hpp).
 Solution solve_scaled(const Model& model, const Options& options, Logger& logger,
                       const WarmStart* warm) {
+  // The clock the time limit runs on starts HERE. Scaling a 500,000-row model and copying
+  // it are tens of seconds, and a polish's budget of 30 used to begin only after them.
+  Timer clock;
   if (!options.get_bool("scaling")) {
-    InteriorPoint engine(model, options, logger, warm);
+    InteriorPoint engine(model, options, logger, warm, &clock);
     return engine.run();
   }
   const Scaling scaling = build_scaling(model, model.col_cost, kRuizIterations);
+  logger.verbose("interior point: scaled in {:.2f}s", clock.elapsed_seconds());
   Model scaled = model;
   scaled.matrix = scaling.matrix;
   scaled.col_cost = scaling.cost;
@@ -872,7 +955,9 @@ Solution solve_scaled(const Model& model, const Options& options, Logger& logger
     }
     warm = &scaled_warm;
   }
-  InteriorPoint engine(scaled, options, logger, warm);
+  logger.verbose("interior point: scaled model and warm start ready at {:.2f}s",
+                 clock.elapsed_seconds());
+  InteriorPoint engine(scaled, options, logger, warm, &clock);
   Solution solution = engine.run();
   for (Index j = 0; j < n; ++j) {
     const auto u = static_cast<std::size_t>(j);
