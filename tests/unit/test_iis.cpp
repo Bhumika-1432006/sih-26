@@ -72,15 +72,14 @@ TEST(IIS, SimpleConflict) {
   //   R1: x <= 2       (lb=-inf, ub=2)
   //   R2: y >= 1       (lb=1, ub=inf)   <- irrelevant
   //   R3: z <= 10      (lb=-inf, ub=10) <- irrelevant
-  Model model = make_lp(
-      {{1, 0, 0},  // R0
-       {1, 0, 0},  // R1
-       {0, 1, 0},  // R2
-       {0, 0, 1}}, // R3
-      {3.0, -kInfinity, 1.0, -kInfinity},                       // row_lower
-      {kInfinity, 2.0, kInfinity, 10.0},                        // row_upper
-      {0.0, 0.0, 0.0},                                          // col_lower
-      {kInfinity, kInfinity, kInfinity});                       // col_upper
+  Model model = make_lp({{1, 0, 0},                          // R0
+                         {1, 0, 0},                          // R1
+                         {0, 1, 0},                          // R2
+                         {0, 0, 1}},                         // R3
+                        {3.0, -kInfinity, 1.0, -kInfinity},  // row_lower
+                        {kInfinity, 2.0, kInfinity, 10.0},   // row_upper
+                        {0.0, 0.0, 0.0},                     // col_lower
+                        {kInfinity, kInfinity, kInfinity});  // col_upper
 
   const Options opts = silent_options();
   const Solution sol = solve(model, opts);
@@ -119,14 +118,13 @@ TEST(IIS, RedundantRowExcluded) {
   // The filter must drop whichever one it finds is redundant (either R1 or R2, since
   // both together with R0 are redundant; exactly one of them must survive alongside R0).
   // We check that exactly two rows appear in the IIS (one is R0).
-  Model model = make_lp(
-      {{1, 0},   // R0: x >= 3
-       {1, 0},   // R1: x <= 2
-       {1, 0}},  // R2: x <= 1
-      {3.0, -kInfinity, -kInfinity},    // row_lower
-      {kInfinity, 2.0, 1.0},            // row_upper
-      {0.0, 0.0},                       // col_lower
-      {kInfinity, kInfinity});          // col_upper
+  Model model = make_lp({{1, 0},                        // R0: x >= 3
+                         {1, 0},                        // R1: x <= 2
+                         {1, 0}},                       // R2: x <= 1
+                        {3.0, -kInfinity, -kInfinity},  // row_lower
+                        {kInfinity, 2.0, 1.0},          // row_upper
+                        {0.0, 0.0},                     // col_lower
+                        {kInfinity, kInfinity});        // col_upper
 
   const Options opts = silent_options();
   const Solution sol = solve(model, opts);
@@ -152,12 +150,11 @@ TEST(IIS, RedundantRowExcluded) {
 
 TEST(IIS, ColumnBoundInConflict) {
   // Single variable x: row says x >= 5 but col_upper = 3.
-  Model model = make_lp(
-      {{1.0}},           // R0: x >= 5
-      {5.0},             // row_lower
-      {kInfinity},       // row_upper
-      {0.0},             // col_lower
-      {3.0});            // col_upper
+  Model model = make_lp({{1.0}},      // R0: x >= 5
+                        {5.0},        // row_lower
+                        {kInfinity},  // row_upper
+                        {0.0},        // col_lower
+                        {3.0});       // col_upper
 
   const Options opts = silent_options();
   const Solution sol = solve(model, opts);
@@ -177,12 +174,8 @@ TEST(IIS, ColumnBoundInConflict) {
 // =========================================================================================
 
 TEST(IIS, ComputeIisDisabled) {
-  Model model = make_lp(
-      {{1, 0}, {1, 0}},
-      {3.0, -kInfinity},
-      {kInfinity, 2.0},
-      {0.0, 0.0},
-      {kInfinity, kInfinity});
+  Model model = make_lp({{1, 0}, {1, 0}}, {3.0, -kInfinity}, {kInfinity, 2.0}, {0.0, 0.0},
+                        {kInfinity, kInfinity});
 
   Options opts = silent_options();
   opts.set_bool("compute_iis", false);
@@ -201,12 +194,8 @@ TEST(IIS, ComputeIisDisabled) {
 // =========================================================================================
 
 TEST(IIS, FeasibleModelHasNoIis) {
-  Model model = make_lp(
-      {{1.0}},       // x >= 0 and x <= 10 -> feasible
-      {0.0},
-      {10.0},
-      {0.0},
-      {kInfinity});
+  Model model = make_lp({{1.0}},  // x >= 0 and x <= 10 -> feasible
+                        {0.0}, {10.0}, {0.0}, {kInfinity});
 
   const Options opts = silent_options();
   const Solution sol = solve(model, opts);
@@ -238,11 +227,11 @@ TEST(IIS, ConflictBuriedAmongManyRows) {
     row_hi.push_back(100.0);
   }
   // Conflict:
-  rows.push_back({1.0});   // R10: x >= 5
+  rows.push_back({1.0});  // R10: x >= 5
   row_lo.push_back(5.0);
   row_hi.push_back(kInfinity);
 
-  rows.push_back({1.0});   // R11: x <= 2
+  rows.push_back({1.0});  // R11: x <= 2
   row_lo.push_back(-kInfinity);
   row_hi.push_back(2.0);
 
