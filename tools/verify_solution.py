@@ -409,6 +409,7 @@ class Solution:
         # without limit, checked together with the feasible point in the columns section.
         self.farkas: dict[str, float] = {}
         self.ray: dict[str, float] = {}
+        self.iis: list[tuple[str, str]] = []
 
     @property
     def status(self) -> str:
@@ -485,6 +486,8 @@ def parse_sol(path: Path) -> Solution:
                 solution.farkas[fields[0]] = float(fields[1])
             elif block == "ray" and len(fields) >= 2:
                 solution.ray[fields[0]] = float(fields[1])
+            elif block == "iis" and len(fields) >= 2:
+                solution.iis.append((fields[0], fields[1]))
             elif block == "rows" and len(fields) >= 3:
                 solution.row_activity[fields[0]] = float(fields[1])
                 solution.row_dual[fields[0]] = float(fields[2])
@@ -557,6 +560,38 @@ def times(model: Model, x: list[float]) -> list[float]:
         for i, value in model.entries[j]:
             out[i] += value * x[j]
     return out
+
+
+def verify_iis(model: Model, solution: Solution, report: Report) -> None:
+    """Note the IIS section if present; check that the named constraints exist in the model.
+
+    Full infeasibility and irreducibility checks require re-solving, which is outside the
+    scope of this standalone verifier. We validate names and note counts so a reviewer can
+    see the IIS without having to parse the .sol file manually.
+    """
+    if not solution.iis:
+        return
+
+    row_iis = [name for kind, name in solution.iis if kind == "row"]
+    col_lo_iis = [name for kind, name in solution.iis if kind == "col_lo"]
+    col_hi_iis = [name for kind, name in solution.iis if kind == "col_hi"]
+
+    report.note("IIS",
+                f"{len(solution.iis)} element(s): "
+                f"{len(row_iis)} row(s), {len(col_lo_iis)} col_lo bound(s), "
+                f"{len(col_hi_iis)} col_hi bound(s)")
+
+    unknown_rows = [n for n in row_iis if n not in model.row_index]
+    report.check(not unknown_rows, "IIS rows exist in model",
+                 f"unknown row name(s): {unknown_rows}")
+
+    unknown_cols = [n for n in col_lo_iis + col_hi_iis if n not in model.col_index]
+    report.check(not unknown_cols, "IIS columns exist in model",
+                 f"unknown column name(s): {unknown_cols}")
+
+    report.note("IIS property check",
+                "infeasibility and irreducibility properties not verified here "
+                "(require re-solving)")
 
 
 def verify_farkas(model: Model, solution: Solution, report: Report) -> Report:
@@ -738,7 +773,9 @@ def verify(model: Model, solution: Solution, primal_tol: float, dual_tol: float,
         return report
 
     if solution.status == "infeasible":
-        return verify_farkas(model, solution, report)
+        verify_farkas(model, solution, report)
+        verify_iis(model, solution, report)
+        return report
 
     # A VERDICT THAT CLAIMS NOTHING IS NOT CHECKED AS IF IT DID (#200). A numerical failure, a
     # solve that never started, a model this solver refuses - none of these assert a point, and

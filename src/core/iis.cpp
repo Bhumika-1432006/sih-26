@@ -98,6 +98,11 @@ void compute_iis(const Model& model, Solution* solution, const Options& options,
     if (!col_hi_in[u]) sub.col_upper[u] = +kInfinity;
   }
 
+  // Zero the cost vector so trial solves are pure feasibility checks, not optimization.
+  // Otherwise a sub-solve may return kUnbounded instead of kInfeasible.
+  sub.col_cost.assign(static_cast<std::size_t>(n), 0.0);
+  sub.objective_offset = 0.0;
+
   // Sub-options: suppress logging, disable IIS recursion, use the dual simplex (fastest at
   // proving infeasibility from a dual-feasible start), disable presolve (the sub-model has
   // few rows and simple structure).
@@ -111,12 +116,32 @@ void compute_iis(const Model& model, Solution* solution, const Options& options,
   const double sub_limit =
       (parent_limit > 0.0 && std::isfinite(parent_limit)) ? std::min(parent_limit, 5.0) : 5.0;
   sub_opts.set_double("time_limit", sub_limit);
+  // Prevent trial solves from appending to the user's progress file.
+  sub_opts.set_string("progress_out", "");
 
   // --- Step 3: deletion filter -----------------------------------------------------------
   //
   // For each candidate, free it in the current working sub-model and re-solve. If still
   // infeasible the candidate is redundant (drop it permanently). If feasible the candidate
   // is necessary (restore it in the working model).
+
+  // Returns true when the candidate is redundant (sub-problem still infeasible without it).
+  // Inconclusive statuses (time limit, numerical error) are treated conservatively: the
+  // candidate is kept (not dropped), and a warning is emitted so the caller knows the
+  // result may not be fully irreducible.
+  bool inconclusive = false;
+  const auto is_redundant = [&](const Solution& trial, const char* kind,
+                                std::size_t idx) -> bool {
+    if (trial.status == SolveStatus::kInfeasible) return true;
+    if (trial.status == SolveStatus::kOptimal || trial.status == SolveStatus::kFeasible)
+      return false;
+    logger.warning(
+        "IIS: {} {} trial inconclusive ({}); candidate kept, result may not be "
+        "irreducible",
+        kind, idx, to_string(trial.status));
+    inconclusive = true;
+    return false;
+  };
 
   // Row candidates.
   for (Index i = 0; i < m; ++i) {
@@ -130,11 +155,9 @@ void compute_iis(const Model& model, Solution* solution, const Options& options,
     sub.row_upper[u] = +kInfinity;
 
     const Solution trial = solve(sub, sub_opts);
-    if (trial.status == SolveStatus::kInfeasible) {
-      // Row i is redundant: keep it freed in the working model.
+    if (is_redundant(trial, "row", u)) {
       row_in[u] = false;
     } else {
-      // Row i is necessary: restore it.
       sub.row_lower[u] = saved_lo;
       sub.row_upper[u] = saved_hi;
     }
@@ -149,7 +172,7 @@ void compute_iis(const Model& model, Solution* solution, const Options& options,
     sub.col_lower[u] = -kInfinity;
 
     const Solution trial = solve(sub, sub_opts);
-    if (trial.status == SolveStatus::kInfeasible) {
+    if (is_redundant(trial, "col_lo", u)) {
       col_lo_in[u] = false;
     } else {
       sub.col_lower[u] = saved_lo;
@@ -165,7 +188,7 @@ void compute_iis(const Model& model, Solution* solution, const Options& options,
     sub.col_upper[u] = +kInfinity;
 
     const Solution trial = solve(sub, sub_opts);
-    if (trial.status == SolveStatus::kInfeasible) {
+    if (is_redundant(trial, "col_hi", u)) {
       col_hi_in[u] = false;
     } else {
       sub.col_upper[u] = saved_hi;
@@ -186,6 +209,11 @@ void compute_iis(const Model& model, Solution* solution, const Options& options,
   logger.info("IIS: {} row(s), {} lower bound(s), {} upper bound(s) are irreducible",
               solution->iis_rows.size(), solution->iis_col_lo.size(),
               solution->iis_col_hi.size());
+  if (inconclusive) {
+    logger.warning(
+        "IIS: at least one trial was inconclusive; the reported IIS may not be "
+        "fully irreducible");
+  }
 }
 
 }  // namespace sankhya

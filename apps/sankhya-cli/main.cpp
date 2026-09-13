@@ -266,17 +266,18 @@ int main(int argc, char** argv) {
     // is ..." - the industrial diagnosis a planner reads first (#217).
     if (!solution.iis_rows.empty() || !solution.iis_col_lo.empty() ||
         !solution.iis_col_hi.empty()) {
-      const auto& m_ref = model;
       std::string iis_msg;
       const auto row_nm = [&](sankhya::Index i) -> std::string {
         const auto u = static_cast<std::size_t>(i);
-        return (u < m_ref.row_names.size() && !m_ref.row_names[u].empty()) ? m_ref.row_names[u]
-               : fmt::format("R{}", i);
+        return (u < model.row_names.size() && !model.row_names[u].empty())
+                   ? model.row_names[u]
+                   : fmt::format("R{}", i);
       };
       const auto col_nm = [&](sankhya::Index j) -> std::string {
         const auto u = static_cast<std::size_t>(j);
-        return (u < m_ref.col_names.size() && !m_ref.col_names[u].empty()) ? m_ref.col_names[u]
-               : fmt::format("C{}", j);
+        return (u < model.col_names.size() && !model.col_names[u].empty())
+                   ? model.col_names[u]
+                   : fmt::format("C{}", j);
       };
       for (const sankhya::Index i : solution.iis_rows) {
         if (!iis_msg.empty()) iis_msg += ", ";
