@@ -77,4 +77,28 @@ bool write_solution(const std::string& path, const Model& model, const Solution&
 bool write_stats_json(const std::string& path, const Model& model, const Solution& solution,
                       std::string* error);
 
+// -----------------------------------------------------------------------------------------
+// Model writers (inverse of the readers above)
+// -----------------------------------------------------------------------------------------
+
+/// Write the model in free-format MPS. Handles LPs, MILPs and convex QPs (QUADOBJ section).
+/// Round-trips via read_mps: dimensions, nonzeros at full precision, bounds and integrality
+/// are all recovered exactly.
+///
+/// Returns false and fills `error` on an I/O failure.
+bool write_mps(const std::string& path, const Model& model, std::string* error);
+
+/// Write the model in CPLEX LP dialect. Ranged rows use the `lo <= expr <= hi` syntax the
+/// reader accepts. LP files cannot encode the quadratic objective at double precision through
+/// the reader (the reader rejects `[ ... ] / 2` today); for QP models use write_mps instead.
+///
+/// Returns false and fills `error` on an I/O failure.
+bool write_lp(const std::string& path, const Model& model, std::string* error);
+
+/// Write the model choosing the format from the file extension: `.lp` -> LP, everything else
+/// -> MPS. This is the function model.write() dispatches to from the C API and Python.
+///
+/// Returns false and fills `error` on an I/O failure.
+bool write_model(const std::string& path, const Model& model, std::string* error);
+
 }  // namespace sankhya::io

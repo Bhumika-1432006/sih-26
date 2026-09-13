@@ -495,5 +495,179 @@ TEST(StatsWriter, ReportsAnUnwritablePath) {
   EXPECT_FALSE(error.empty());
 }
 
+// =========================================================================================
+// MPS and LP model writer round-trips (#224)
+// =========================================================================================
+
+/// Compare two models for round-trip identity: same dimensions, same nonzeros at full
+/// precision, same bounds and integrality flags.
+void expect_models_identical(const Model& a, const Model& b) {
+  ASSERT_EQ(a.num_cols(), b.num_cols());
+  ASSERT_EQ(a.num_rows(), b.num_rows());
+  ASSERT_EQ(a.num_nonzeros(), b.num_nonzeros());
+  EXPECT_EQ(a.sense, b.sense);
+  EXPECT_DOUBLE_EQ(a.objective_offset, b.objective_offset);
+  for (Index j = 0; j < a.num_cols(); ++j) {
+    const auto u = static_cast<std::size_t>(j);
+    EXPECT_DOUBLE_EQ(a.col_cost[u], b.col_cost[u]) << "col_cost[" << j << "]";
+    EXPECT_DOUBLE_EQ(a.col_lower[u], b.col_lower[u]) << "col_lower[" << j << "]";
+    EXPECT_DOUBLE_EQ(a.col_upper[u], b.col_upper[u]) << "col_upper[" << j << "]";
+    EXPECT_EQ(a.col_type[u], b.col_type[u]) << "col_type[" << j << "]";
+  }
+  for (Index i = 0; i < a.num_rows(); ++i) {
+    const auto u = static_cast<std::size_t>(i);
+    EXPECT_DOUBLE_EQ(a.row_lower[u], b.row_lower[u]) << "row_lower[" << i << "]";
+    EXPECT_DOUBLE_EQ(a.row_upper[u], b.row_upper[u]) << "row_upper[" << i << "]";
+  }
+  // Check every matrix nonzero by value at each (row, col) position.
+  for (Index j = 0; j < a.num_cols(); ++j) {
+    const ColumnView ca = a.matrix.column(j);
+    for (Index k = 0; k < ca.size; ++k) {
+      EXPECT_DOUBLE_EQ(ca.values[k], b.matrix.at(ca.rows[k], j))
+          << "matrix[" << ca.rows[k] << "," << j << "]";
+    }
+  }
+}
+
+TEST(ModelWriter, MpsRoundTripLp) {
+  // The model from make_model(): ranged row, equality, upper-bounded row; maximization;
+  // offset. Everything the MPS writer has to handle.
+  const Model original = make_model();
+  const TempFile mps_file("", ".mps");
+  std::string error;
+  ASSERT_TRUE(io::write_mps(mps_file.path(), original, &error)) << error;
+
+  Model recovered;
+  const io::ReadResult result = io::read_mps(mps_file.path(), &recovered);
+  ASSERT_TRUE(result.ok) << result.error;
+
+  expect_models_identical(original, recovered);
+}
+
+TEST(ModelWriter, LpRoundTripSolvesIdentically) {
+  // LP round-trip: same objective at the optimum (the model structure may differ due to
+  // ranged-row representation, but the feasible region and objective are identical).
+  const Model original = make_model();
+  const TempFile lp_file("", ".lp");
+  std::string error;
+  ASSERT_TRUE(io::write_lp(lp_file.path(), original, &error)) << error;
+
+  Model recovered;
+  const io::ReadResult result = io::read_lp(lp_file.path(), &recovered);
+  ASSERT_TRUE(result.ok) << result.error;
+
+  Options options;
+  options.set_bool("log_to_console", false);
+  const Solution s1 = solve(original, options);
+  const Solution s2 = solve(recovered, options);
+  ASSERT_EQ(s1.status, SolveStatus::kOptimal) << s1.message;
+  ASSERT_EQ(s2.status, SolveStatus::kOptimal) << s2.message;
+  EXPECT_DOUBLE_EQ(s1.objective, s2.objective);
+}
+
+TEST(ModelWriter, MpsRoundTripQp) {
+  // A convex QP: min 0.5(2x^2 + 4y^2) - 2x - 8y  s.t. x + y >= 0.
+  // Optimal: x=1, y=2, objective=-9.
+  Model qp;
+  qp.name = "QP_ROUNDTRIP";
+  qp.sense = ObjSense::kMinimize;
+  qp.col_cost = {-2.0, -8.0};
+  qp.col_lower = {-kInfinity, -kInfinity};
+  qp.col_upper = {kInfinity, kInfinity};
+  qp.col_type = {VarType::kContinuous, VarType::kContinuous};
+  qp.col_names = {"x", "y"};
+  qp.row_lower = {0.0};
+  qp.row_upper = {kInfinity};
+  qp.row_names = {"R1"};
+  qp.matrix.reset(1, 2);
+  qp.matrix.add_entry(0, 0, 1.0);
+  qp.matrix.add_entry(0, 1, 1.0);
+  qp.matrix.finalize();
+  qp.hessian.reset(2, 2);
+  qp.hessian.add_entry(0, 0, 2.0);
+  qp.hessian.add_entry(1, 1, 4.0);
+  qp.hessian.finalize();
+  ASSERT_EQ(qp.validate(), "");
+
+  const TempFile mps_file("", ".mps");
+  std::string error;
+  ASSERT_TRUE(io::write_mps(mps_file.path(), qp, &error)) << error;
+
+  Model recovered;
+  const io::ReadResult result = io::read_mps(mps_file.path(), &recovered);
+  ASSERT_TRUE(result.ok) << result.error;
+
+  expect_models_identical(qp, recovered);
+  EXPECT_EQ(recovered.hessian.num_nonzeros(), 2);
+  EXPECT_DOUBLE_EQ(recovered.hessian.at(0, 0), 2.0);
+  EXPECT_DOUBLE_EQ(recovered.hessian.at(1, 1), 4.0);
+}
+
+TEST(ModelWriter, MpsRoundTripIntegerBounds) {
+  // A MILP with binary, fixed, and free-bounded integer variables.
+  Model milp;
+  milp.name = "MILP_BOUNDS";
+  milp.col_cost = {1.0, 2.0, 3.0, 4.0};
+  milp.col_lower = {0.0, 0.0, -kInfinity, 5.0};
+  milp.col_upper = {1.0, 1.0, kInfinity, 5.0};
+  milp.col_type = {VarType::kInteger, VarType::kInteger, VarType::kInteger, VarType::kInteger};
+  milp.col_names = {"bin1", "bin2", "free_int", "fixed_int"};
+  milp.row_lower = {-kInfinity};
+  milp.row_upper = {10.0};
+  milp.row_names = {"cap"};
+  milp.matrix.reset(1, 4);
+  milp.matrix.add_entry(0, 0, 1.0);
+  milp.matrix.add_entry(0, 1, 1.0);
+  milp.matrix.add_entry(0, 2, 1.0);
+  milp.matrix.add_entry(0, 3, 1.0);
+  milp.matrix.finalize();
+  milp.hessian.reset(4, 4);
+  milp.hessian.finalize();
+  ASSERT_EQ(milp.validate(), "");
+
+  const TempFile mps_file("", ".mps");
+  std::string error;
+  ASSERT_TRUE(io::write_mps(mps_file.path(), milp, &error)) << error;
+
+  Model recovered;
+  const io::ReadResult result = io::read_mps(mps_file.path(), &recovered);
+  ASSERT_TRUE(result.ok) << result.error;
+  expect_models_identical(milp, recovered);
+}
+
+TEST(ModelWriter, WriteMpsFailsOnBadPath) {
+  const Model model = make_model();
+  std::string error;
+  EXPECT_FALSE(io::write_mps("no_such_dir/out.mps", model, &error));
+  EXPECT_FALSE(error.empty());
+}
+
+TEST(ModelWriter, WriteLpFailsOnBadPath) {
+  const Model model = make_model();
+  std::string error;
+  EXPECT_FALSE(io::write_lp("no_such_dir/out.lp", model, &error));
+  EXPECT_FALSE(error.empty());
+}
+
+TEST(ModelWriter, WriteModelPicksFormatFromExtension) {
+  const Model model = make_model();
+  {
+    const TempFile mps_file("", ".mps");
+    std::string error;
+    ASSERT_TRUE(io::write_model(mps_file.path(), model, &error)) << error;
+    // The written file must be readable as MPS.
+    Model recovered;
+    EXPECT_TRUE(io::read_mps(mps_file.path(), &recovered).ok);
+  }
+  {
+    const TempFile lp_file("", ".lp");
+    std::string error;
+    ASSERT_TRUE(io::write_model(lp_file.path(), model, &error)) << error;
+    // The written file must be readable as LP.
+    Model recovered;
+    EXPECT_TRUE(io::read_lp(lp_file.path(), &recovered).ok);
+  }
+}
+
 }  // namespace
 }  // namespace sankhya

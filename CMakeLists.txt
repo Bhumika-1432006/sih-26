@@ -186,6 +186,7 @@ set(SANKHYA_CORE_SOURCES
   src/io/lp_reader.cpp
   src/io/mps_bounds.cpp
   src/io/mps_reader.cpp
+  src/io/model_writer.cpp
   src/io/writer.cpp
   src/qp/convexity.cpp
   src/qp/qp_condat_vu.cpp

@@ -413,6 +413,17 @@ const std::vector<OptionSpec>& Options::registry() {
                  {},
                  /*planned_for=*/std::string(""),
                  /*case_sensitive=*/true});
+    s.push_back({"write_presolved",
+                 OptionType::String,
+                 std::string(""),
+                 "Write the presolved model to this path before solving it. Extension "
+                 "determines format: .lp -> CPLEX LP, anything else -> free MPS. "
+                 "Empty disables the dump.",
+                 0.0,
+                 0.0,
+                 {},
+                 /*planned_for=*/std::string(""),
+                 /*case_sensitive=*/true});
     return s;
   }();
   return specs;

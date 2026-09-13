@@ -20,6 +20,7 @@
 #include "core/status_guard.hpp"
 #include "presolve/presolve.hpp"
 #include "sankhya/certificate.hpp"
+#include "sankhya/io.hpp"
 #include "sankhya/ipm.hpp"
 #include "sankhya/logging.hpp"
 #include "sankhya/mip.hpp"
@@ -409,6 +410,16 @@ Solution solve(const Model& model, const Options& options) {
         logger.info("Result: {} (proved during presolve)  {:.3f}s", to_string(solution.status),
                     solution.solve_seconds);
         return solution;
+      }
+      // Dump the presolved model when --option write_presolved=<path> is set.
+      const std::string presolved_path = options.get_string("write_presolved");
+      if (!presolved_path.empty()) {
+        std::string write_error;
+        if (!io::write_model(presolved_path, reduced.model, &write_error)) {
+          logger.warning("write_presolved: {}", write_error);
+        } else {
+          logger.info("Presolved model written to {}", presolved_path);
+        }
       }
       Solution inner = run_lp_engine(reduced.model);
       solution = presolve::postsolve(reduced, model, inner);
