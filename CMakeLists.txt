@@ -201,6 +201,7 @@ set(SANKHYA_CORE_SOURCES
   src/pdhg/pdhg.cpp
   src/simplex/dual_simplex.cpp
   src/simplex/primal_simplex.cpp
+  src/simplex/ranging.cpp
   src/util/logging.cpp
   src/util/options.cpp
   src/util/version.cpp)

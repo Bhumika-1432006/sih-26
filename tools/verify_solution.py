@@ -409,6 +409,11 @@ class Solution:
         # without limit, checked together with the feasible point in the columns section.
         self.farkas: dict[str, float] = {}
         self.ray: dict[str, float] = {}
+        # Sensitivity ranging (populated when --ranging was passed to the solver).
+        self.col_ranging_lower: dict[str, float] = {}
+        self.col_ranging_upper: dict[str, float] = {}
+        self.row_ranging_lower: dict[str, float] = {}
+        self.row_ranging_upper: dict[str, float] = {}
 
     @property
     def status(self) -> str:
@@ -489,6 +494,12 @@ def parse_sol(path: Path) -> Solution:
                 solution.row_activity[fields[0]] = float(fields[1])
                 solution.row_dual[fields[0]] = float(fields[2])
                 solution.row_status[fields[0]] = fields[3] if len(fields) > 3 else "unknown"
+            elif block == "ranging_columns" and len(fields) >= 3:
+                solution.col_ranging_lower[fields[0]] = float(fields[1])
+                solution.col_ranging_upper[fields[0]] = float(fields[2])
+            elif block == "ranging_rows" and len(fields) >= 3:
+                solution.row_ranging_lower[fields[0]] = float(fields[1])
+                solution.row_ranging_upper[fields[0]] = float(fields[2])
             elif not block and len(fields) >= 2:
                 solution.header[fields[0]] = " ".join(fields[1:])
     return solution
@@ -1144,6 +1155,30 @@ def verify(model: Model, solution: Solution, primal_tol: float, dual_tol: float,
                  f"primal {objective:.12e}  dual {dual_objective:.12e}  "
                  f"gap {gap:.3e} (relative {gap / scale:.3e}), "
                  f"{accounted:.3e} of it from per-item violations accepted above")
+
+    # ---- Sensitivity ranging (optional; only checked when the .sol has the sections) ------
+    # For nonbasic columns at lower bound the cost ranging lower bound equals the reduced
+    # cost; this is the one case verify_solution.py can check without the LU factors.
+    # Reference: Chvatal, "Linear Programming", ch. 10 (1983).
+    if solution.col_ranging_lower:
+        worst_lo, worst_lo_where = 0.0, ""
+        for j, name in enumerate(model.col_names):
+            if solution.col_status.get(name) != "at_lower":
+                continue
+            dj = d[j]  # reduced cost in minimization space (>= 0 for at_lower)
+            reported = solution.col_ranging_lower.get(name)
+            if reported is None:
+                continue
+            scale_j = max(1.0, abs(dj), abs(reported))
+            err = abs(reported - dj) / scale_j
+            if err > worst_lo:
+                worst_lo, worst_lo_where = err, name
+        report.check(
+            worst_lo <= 1e-6,
+            "ranging: nonbasic-at-lower cost_lo == reduced_cost",
+            f"max relative error {worst_lo:.3e}"
+            + (f" on {worst_lo_where}" if worst_lo_where else ""))
+
     return report
 
 

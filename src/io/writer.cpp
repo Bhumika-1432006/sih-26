@@ -206,6 +206,28 @@ bool write_solution(const std::string& path, const Model& model, const Solution&
   }
   fmt::print(out, "end rows\n");
 
+  // Sensitivity ranging: objective and RHS intervals for each column and row.
+  if (!solution.col_ranging_lower.empty() &&
+      solution.col_ranging_lower.size() == static_cast<std::size_t>(n) &&
+      solution.row_ranging_lower.size() == static_cast<std::size_t>(m)) {
+    fmt::print(out, "\n# name obj_lo obj_hi\n");
+    fmt::print(out, "begin ranging_columns {}\n", n);
+    for (Index j = 0; j < n; ++j) {
+      const auto jj = static_cast<std::size_t>(j);
+      fmt::print(out, "{} {} {}\n", quoted_name(column_name(model, j)),
+                 exact(solution.col_ranging_lower[jj]), exact(solution.col_ranging_upper[jj]));
+    }
+    fmt::print(out, "end ranging_columns\n");
+    fmt::print(out, "\n# name rhs_lo rhs_hi\n");
+    fmt::print(out, "begin ranging_rows {}\n", m);
+    for (Index i = 0; i < m; ++i) {
+      const auto ii = static_cast<std::size_t>(i);
+      fmt::print(out, "{} {} {}\n", quoted_name(row_name(model, i)),
+                 exact(solution.row_ranging_lower[ii]), exact(solution.row_ranging_upper[ii]));
+    }
+    fmt::print(out, "end ranging_rows\n");
+  }
+
   // The ray, read together with the point above: x + t*d stays feasible for every
   // t >= 0 and the objective improves without limit along it (#191).
   if (solution.status == SolveStatus::kUnbounded && !solution.primal_ray.empty()) {

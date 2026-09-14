@@ -279,6 +279,18 @@ class Solution {
   /// carries the feasible point it starts from.
   std::vector<double> primal_ray;
 
+  // ---- Sensitivity ranging (populated only when options.get_bool("ranging") is true) ----
+  //
+  // For column j: col_ranging_lower[j] = max decrease of c_j before the optimal basis
+  //   changes; col_ranging_upper[j] = max increase.
+  // For row i: row_ranging_lower[i] = max decrease of the active row bound before the
+  //   basis becomes primal infeasible; row_ranging_upper[i] = max increase.
+  // Reference: Chvatal, "Linear Programming", ch. 10 (W. H. Freeman, 1983).
+  std::vector<double> col_ranging_lower;
+  std::vector<double> col_ranging_upper;
+  std::vector<double> row_ranging_lower;
+  std::vector<double> row_ranging_upper;
+
   // ---- Reported quality. Never assumed - always measured before reporting. -------------
 
   double primal_infeasibility = 0.0;  ///< max violation over row and column bounds
