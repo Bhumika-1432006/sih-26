@@ -279,6 +279,38 @@ class Solution {
   /// carries the feasible point it starts from.
   std::vector<double> primal_ray;
 
+  // ---- Irreducible Infeasible Subsystem (IIS), computed by the deletion filter (#217) ----
+  //
+  // An ADDITION to this frozen interface, called out here as farkas_dual was in #191. These
+  // default to empty; every existing consumer ignores them. Populated only when status is
+  // kInfeasible, a Farkas certificate exists, and the compute_iis option is enabled.
+  //
+  // Algorithm: Chinneck & Dravnieks, "Locating minimal infeasible constraint sets in linear
+  // programs", ORSA J. Computing 3(2) (1991). Starting from the k rows and column bounds
+  // the Farkas certificate names, remove each one in turn, re-solve, and keep it out
+  // permanently if the sub-problem stays infeasible. The result is irreducible: removing
+  // any single element from it makes the sub-system feasible.
+
+  /// Row indices (0-based) that form the IIS.
+  std::vector<Index> iis_rows;
+  /// Column indices (0-based) whose lower bound is in the IIS.
+  std::vector<Index> iis_col_lo;
+  /// Column indices (0-based) whose upper bound is in the IIS.
+  std::vector<Index> iis_col_hi;
+  /// One witness per IIS element, in the order iis_rows, iis_col_lo, iis_col_hi: a point
+  /// (num_cols values) that satisfies every other element of the IIS and violates that one.
+  /// It is the deletion filter's own evidence that the element is necessary - the trial
+  /// solve that kept it - retained so that tools/verify_solution.py can check
+  /// irreducibility by arithmetic alone. Empty when iis_inconclusive is set. When an IIS is
+  /// reported, farkas_dual is the certificate of the IIS itself: its support lies inside
+  /// iis_rows and the bounds it uses are iis_col_lo / iis_col_hi, so the same checker
+  /// proves the subsystem infeasible on its own.
+  std::vector<std::vector<double>> iis_witnesses;
+  /// True when a trial solve ended in neither verdict (a limit or a numerical error), or the
+  /// final certificate could not be re-proved: the candidates concerned were kept, the IIS
+  /// may not be irreducible, and the .sol file says `iis_irreducible not-claimed`.
+  bool iis_inconclusive = false;
+
   // ---- Reported quality. Never assumed - always measured before reporting. -------------
 
   double primal_infeasibility = 0.0;  ///< max violation over row and column bounds
