@@ -38,6 +38,8 @@
 
 #include "la/ldl.hpp"
 #include "la/scaling.hpp"
+
+#include "sankhya/solve_control.hpp"
 #include "sankhya/timer.hpp"
 #include "sankhya/tolerances.hpp"
 
@@ -102,8 +104,14 @@ constexpr int kRuizIterations = 10;
 class InteriorPoint {
  public:
   InteriorPoint(const Model& model, const Options& options, Logger& logger,
-                const WarmStart* warm = nullptr, const Timer* clock = nullptr)
-      : model_(model), options_(options), logger_(logger), warm_(warm), clock_(clock) {}
+                SolveControl* control = nullptr, const WarmStart* warm = nullptr,
+                const Timer* clock = nullptr)
+      : model_(model),
+        options_(options),
+        logger_(logger),
+        control_(control),
+        warm_(warm),
+        clock_(clock) {}
 
   Solution run();
 
@@ -145,6 +153,7 @@ class InteriorPoint {
   const Model& model_;
   const Options& options_;
   Logger& logger_;
+  SolveControl* control_ = nullptr;
   const WarmStart* warm_ = nullptr;
   /// The clock the time limit is measured on. solve_scaled() starts it BEFORE scaling and
   /// copying the model, which on a 500,000-row polish is tens of seconds that run()'s own
@@ -618,7 +627,8 @@ Solution InteriorPoint::finish(SolveStatus status, const std::string& message, C
   logger_.info("IPM: {} iterations, {} factorizations, {} regularized pivot(s) in total",
                iterations, factorizations_, regularized_pivots_);
   bool have_point = status == SolveStatus::kOptimal || status == SolveStatus::kFeasible ||
-                    status == SolveStatus::kIterationLimit || status == SolveStatus::kTimeLimit;
+                    status == SolveStatus::kIterationLimit ||
+                    status == SolveStatus::kTimeLimit || status == SolveStatus::kInterrupted;
 
   // A LIMIT IS NOT A LICENCE TO REPORT NONSENSE (#194). Reaching the time limit means the
   // iterate in hand is the answer, and normally it is a real point. It is not one if the
@@ -680,7 +690,17 @@ Solution InteriorPoint::run() {
   // Handed to the linear algebra so the clock is not only consulted between iterations.
   // Captured by reference to the local timer, which outlives every call that uses it.
   if (time_limit > 0.0 && std::isfinite(time_limit)) {
-    should_stop_ = [&timer, time_limit] { return timer.elapsed_seconds() > time_limit; };
+    if (control_ != nullptr) {
+      // Observe both the wall-clock deadline and any external SolveControl interruption.
+      should_stop_ = [&timer, time_limit, control = control_] {
+        return timer.elapsed_seconds() > time_limit || control->interruption_requested();
+      };
+    } else {
+      should_stop_ = [&timer, time_limit] { return timer.elapsed_seconds() > time_limit; };
+    }
+  } else if (control_ != nullptr) {
+    // No time limit, but interruption is still supported.
+    should_stop_ = [control = control_] { return control->interruption_requested(); };
   }
   const std::int64_t iteration_limit = options_.get_int("iteration_limit");
   if (warm_ != nullptr) max_factor_nonzeros_ = options_.get_int("polish_max_factor_nonzeros");
@@ -690,10 +710,13 @@ Solution InteriorPoint::run() {
   // A polish arrives with most of its budget spent by the first-order phase; a build that
   // already used the rest must not go on to assemble and order for nothing (#232).
   if (should_stop_ && should_stop_()) {
+    const bool interrupted = control_ != nullptr && control_->interruption_requested();
     return finish(
-        SolveStatus::kTimeLimit,
-        fmt::format("time limit {:g}s reached before the first iteration", time_limit), 0,
-        timer.elapsed_seconds());
+        interrupted ? SolveStatus::kInterrupted : SolveStatus::kTimeLimit,
+        interrupted
+            ? "interrupted before the first iteration"
+            : fmt::format("time limit {:g}s reached before the first iteration", time_limit),
+        0, timer.elapsed_seconds());
   }
   logger_.info("Interior point: {} rows, {} columns, {} nonzeros", m_, n_,
                model_.num_nonzeros());
@@ -702,6 +725,7 @@ Solution InteriorPoint::run() {
   Count iterations = 0;
   double previous_mu = std::numeric_limits<double>::infinity();
   int stalled = 0;
+
   for (;; ++iterations) {
     residuals();
     logger_.iteration(iterations,
@@ -768,11 +792,13 @@ Solution InteriorPoint::run() {
                       iterations, primal_infeasibility_, dual_infeasibility_, relative_gap),
           iterations, timer.elapsed_seconds());
     }
-    if (timer.elapsed_seconds() > time_limit) {
+    if (should_stop_ && should_stop_()) {
       restore_best();
-      return finish(SolveStatus::kTimeLimit,
-                    fmt::format("time limit {:g}s reached", time_limit), iterations,
-                    timer.elapsed_seconds());
+      const bool interrupted = control_ != nullptr && control_->interruption_requested();
+      return finish(
+          interrupted ? SolveStatus::kInterrupted : SolveStatus::kTimeLimit,
+          interrupted ? "interrupted" : fmt::format("time limit {:g}s reached", time_limit),
+          iterations, timer.elapsed_seconds());
     }
     if (!factorize()) {
       if (factor_too_large_) {
@@ -906,12 +932,12 @@ Solution InteriorPoint::run() {
 /// applies it, then the point, the row duals and the reduced costs are mapped back:
 /// x = Dc xhat, y = Dr yhat, d = Dc^-1 dhat (la/scaling.hpp).
 Solution solve_scaled(const Model& model, const Options& options, Logger& logger,
-                      const WarmStart* warm) {
+                      SolveControl* control, const WarmStart* warm) {
   // The clock the time limit runs on starts HERE. Scaling a 500,000-row model and copying
   // it are tens of seconds, and a polish's budget of 30 used to begin only after them.
   Timer clock;
   if (!options.get_bool("scaling")) {
-    InteriorPoint engine(model, options, logger, warm, &clock);
+    InteriorPoint engine(model, options, logger, control, warm, &clock);
     return engine.run();
   }
   const Scaling scaling = build_scaling(model, model.col_cost, kRuizIterations);
@@ -957,7 +983,7 @@ Solution solve_scaled(const Model& model, const Options& options, Logger& logger
   }
   logger.verbose("interior point: scaled model and warm start ready at {:.2f}s",
                  clock.elapsed_seconds());
-  InteriorPoint engine(scaled, options, logger, warm, &clock);
+  InteriorPoint engine(scaled, options, logger, control, warm, &clock);
   Solution solution = engine.run();
   for (Index j = 0; j < n; ++j) {
     const auto u = static_cast<std::size_t>(j);
@@ -978,13 +1004,19 @@ Solution solve_scaled(const Model& model, const Options& options, Logger& logger
 
 }  // namespace
 
-Solution solve_ipm(const Model& model, const Options& options, Logger& logger) {
-  return solve_scaled(model, options, logger, nullptr);
+Solution solve_ipm(const Model& model, const Options& options, Logger& logger,
+                   SolveControl* control) {
+  return solve_scaled(model, options, logger, control, nullptr);
 }
 
 Solution solve_ipm(const Model& model, const Options& options, Logger& logger,
                    const WarmStart* warm) {
-  return solve_scaled(model, options, logger, warm);
+  return solve_scaled(model, options, logger, nullptr, warm);
+}
+
+Solution solve_ipm(const Model& model, const Options& options, Logger& logger,
+                   SolveControl* control, const WarmStart* warm) {
+  return solve_scaled(model, options, logger, control, warm);
 }
 
 }  // namespace sankhya::ipm

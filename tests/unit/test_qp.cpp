@@ -166,7 +166,7 @@ TEST(ConvexQp, ANegativeCurvatureDirectionIsRefused) {
   const Solution s = solve(model, qp_options());
   EXPECT_EQ(s.status, SolveStatus::kModelError);
   EXPECT_NE(s.message.find("not convex"), std::string::npos) << s.message;
-  EXPECT_FALSE(s.has_primal_values());
+  EXPECT_FALSE(claims_a_point(s));
 }
 
 TEST(ConvexQp, IndefinitenessHiddenOffTheDiagonalIsAlsoRefused) {

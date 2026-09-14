@@ -68,11 +68,7 @@ TEST(NonFiniteAnswer, EveryEngineReturnsFiniteNumbersOrSaysItFailed) {
     Options options = quiet();
     options.set_string("algorithm", engine);
     const Solution solution = solve(model, options);
-    const bool claims_a_point = solution.status == SolveStatus::kOptimal ||
-                                solution.status == SolveStatus::kFeasible ||
-                                solution.status == SolveStatus::kIterationLimit ||
-                                solution.status == SolveStatus::kTimeLimit;
-    if (!claims_a_point) continue;
+    if (!claims_a_point(solution)) continue;
     EXPECT_TRUE(std::isfinite(solution.objective))
         << engine << " reported a non-finite objective: " << solution.message;
     for (std::size_t j = 0; j < solution.col_value.size(); ++j) {

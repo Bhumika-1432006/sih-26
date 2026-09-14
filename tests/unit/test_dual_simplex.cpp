@@ -314,7 +314,7 @@ TEST(DualSimplex, WarmStartFromATightenedParentTakesFewPivots) {
   warm.row_status = parent.row_status;
   Options options = engine_options("dual-simplex");
   Logger logger(nullptr);
-  const Solution child_warm = solve_dual_simplex(model, options, logger, &warm);
+  const Solution child_warm = solve_dual_simplex(model, options, logger, nullptr, &warm);
   const Solution child_cold = run_primal(model);
   ASSERT_EQ(child_warm.status, SolveStatus::kOptimal) << child_warm.message;
   ASSERT_EQ(child_cold.status, SolveStatus::kOptimal) << child_cold.message;
@@ -334,7 +334,7 @@ TEST(DualSimplex, AWarmStartThatIsNotABasisFallsBackToTheSlackBasis) {
   bogus.row_status = {BasisStatus::kBasic, BasisStatus::kBasic};  // four basic, two rows
   Options options = engine_options("dual-simplex");
   Logger logger(nullptr);
-  const Solution solution = solve_dual_simplex(model, options, logger, &bogus);
+  const Solution solution = solve_dual_simplex(model, options, logger, nullptr, &bogus);
   expect_certified_optimal(solution);
   EXPECT_NEAR(solution.objective, 1.4, 1e-9);
 }

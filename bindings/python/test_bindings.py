@@ -199,6 +199,62 @@ def test_handles_are_released() -> None:
                   f"{result.objective}")
     check(True, "2000 create/destroy cycles completed")
 
+def test_interrupt() -> None:
+    import threading
+    import time
+
+    model = sankhya.Model(maximize=True)
+    x = model.add_column(cost=3.0, upper=3.0)
+    y = model.add_column(cost=2.0)
+    model.add_row({x: 1.0, y: 1.0}, upper=4.0)
+
+    def worker():
+        time.sleep(0.05)
+        model.interrupt()
+
+    threading.Thread(target=worker).start()
+
+    def stall(p):
+        time.sleep(0.1)
+        return 0
+
+    result = model.solve(iteration_limit=500000000, algorithm="simplex", callback=stall)
+    check(result.status == "interrupted", "solver interrupted async", result.status)
+
+
+def test_callback() -> None:
+    model = sankhya.Model(maximize=True)
+    x = model.add_column(cost=3.0, upper=3.0)
+    y = model.add_column(cost=2.0)
+    model.add_row({x: 1.0, y: 1.0}, upper=4.0)
+
+    # 1. callback=None
+    result = model.solve(callback=None, log_to_console=False)
+    check(result.status == "optimal", "callback=None works", result.status)
+
+    # 2. callback returns 0
+    calls = []
+    def cb_zero(p):
+        calls.append(p.phase)
+        return 0
+    result = model.solve(callback=cb_zero, log_to_console=False)
+    check(result.status == "optimal", "callback=cb_zero works", result.status)
+
+    # 3. callback returns 1
+    def cb_one(p):
+        return 1
+    result = model.solve(callback=cb_one, log_to_console=False, iteration_limit=500000000)
+    check(result.status == "interrupted", "callback=cb_one interrupts", result.status)
+
+    # 4. callback raises exception
+    def cb_exc(p):
+        raise ValueError("test exception")
+    try:
+        model.solve(callback=cb_exc, log_to_console=False, iteration_limit=500000000)
+        check(False, "callback exception was swallowed")
+    except ValueError as e:
+        check(str(e) == "test exception", "callback exception propagated correctly")
+
 
 def main() -> int:
     print(f"SANKHYA Python bindings, against solver version {sankhya.version()}\n")

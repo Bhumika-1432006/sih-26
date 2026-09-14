@@ -13,16 +13,19 @@
 // This is the stand-in for the exact rational oracle until Phase 3 builds the real one.
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include "sankhya/model.hpp"
 #include "sankhya/options.hpp"
+#include "sankhya/solve_control.hpp"
 #include "sankhya/tolerances.hpp"
 
 namespace sankhya {
@@ -417,6 +420,59 @@ TEST(PrimalSimplex, StopsAtTheIterationLimit) {
   const Solution solution = solve(model, options);
   EXPECT_EQ(solution.status, SolveStatus::kIterationLimit);
   EXPECT_EQ(solution.iterations, 1);
+}
+
+TEST(PrimalSimplex, RespectsSolveControlInterruptionWithThrottledCallback) {
+  // A degenerate problem that requires thousands of iterations.
+  constexpr int k = 8;
+  std::vector<double> cost;
+  for (int i = 0; i < k; ++i) {
+    for (int j = 0; j < k; ++j) {
+      cost.push_back(static_cast<double>((i * j) % 3) + 1.0);
+    }
+  }
+  const auto n = static_cast<std::size_t>(k * k);
+  std::vector<std::vector<double>> rows;
+  std::vector<double> bounds;
+  for (int i = 0; i < k; ++i) {
+    std::vector<double> row(n, 0.0);
+    for (int j = 0; j < k; ++j) row[static_cast<std::size_t>(i * k + j)] = 1.0;
+    rows.push_back(row);
+    bounds.push_back(1.0);
+  }
+  for (int j = 0; j < k; ++j) {
+    std::vector<double> row(n, 0.0);
+    for (int i = 0; i < k; ++i) row[static_cast<std::size_t>(i * k + j)] = 1.0;
+    rows.push_back(row);
+    bounds.push_back(1.0);
+  }
+  const Model model = make_model(ObjSense::kMinimize, cost, std::vector<double>(n, 0.0),
+                                 std::vector<double>(n, kInf), rows, bounds, bounds);
+
+  sankhya::SolveControl control;
+  int callback_count = 0;
+  control.progress_callback = [&](const sankhya::Progress&) {
+    if (++callback_count == 1) {
+      // Sleep to guarantee the 0.1s throttle expires before the next iteration.
+      std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    }
+    if (callback_count == 2) {
+      // Return nonzero to interrupt on the 2nd callback.
+      // Because callbacks are throttled, this tests that throttling works and is respected.
+      return 1;
+    }
+    return 0;
+  };
+
+  Options options;
+  options.set_bool("log_to_console", false);
+  options.set_bool("presolve", false);
+  options.set_string("algorithm", "simplex");
+  const Solution solution = solve(model, options, &control);
+
+  EXPECT_EQ(solution.status, SolveStatus::kInterrupted);
+  EXPECT_TRUE(claims_a_point(solution));
+  EXPECT_EQ(callback_count, 2);
 }
 
 // =========================================================================================
