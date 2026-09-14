@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -31,18 +32,64 @@
 namespace sankhya::io {
 namespace {
 
-/// Return the column name, generating one if names are absent.
-[[nodiscard]] std::string col_nm(const Model& model, Index j) {
-  const auto u = static_cast<std::size_t>(j);
-  if (u < model.col_names.size() && !model.col_names[u].empty()) return model.col_names[u];
-  return fmt::format("C{}", j);
+/// The names a file will carry, decided once per write. A real name is kept as given; an
+/// absent one is generated, and every generated name is made unique against every real name
+/// and every earlier generated one - an unnamed column 3 beside a real column named "C3"
+/// used to write two "C3" entries, which a reader binds to one column: a different model,
+/// silently. Both formats split on whitespace and neither quotes, so a real name that
+/// contains whitespace, or two real names that are equal, is refused with a message rather
+/// than written wrong.
+struct Names {
+  std::vector<std::string> col;
+  std::vector<std::string> row;
+};
+
+[[nodiscard]] bool build_names(const std::vector<std::string>& given, Index count, char prefix,
+                               const char* what, std::vector<std::string>* out,
+                               std::string* error) {
+  out->assign(static_cast<std::size_t>(count), std::string());
+  std::unordered_set<std::string> taken;
+  for (Index k = 0; k < count; ++k) {
+    const auto u = static_cast<std::size_t>(k);
+    if (u >= given.size() || given[u].empty()) continue;
+    const std::string& name = given[u];
+    const bool has_whitespace = std::any_of(
+        name.begin(), name.end(), [](unsigned char c) { return std::isspace(c) != 0; });
+    if (has_whitespace) {
+      if (error != nullptr) {
+        *error = fmt::format(
+            "{} {} is named \"{}\", which contains whitespace; neither MPS nor LP can carry "
+            "such a name",
+            what, k, name);
+      }
+      return false;
+    }
+    if (!taken.insert(name).second) {
+      if (error != nullptr) {
+        *error = fmt::format(
+            "{} name \"{}\" is used twice; a file with duplicate names reads back as a "
+            "different model",
+            what, name);
+      }
+      return false;
+    }
+    (*out)[u] = name;
+  }
+  for (Index k = 0; k < count; ++k) {
+    const auto u = static_cast<std::size_t>(k);
+    if (!(*out)[u].empty()) continue;
+    std::string candidate = fmt::format("{}{}", prefix, k);
+    for (int suffix = 1; !taken.insert(candidate).second; ++suffix) {
+      candidate = fmt::format("{}{}_{}", prefix, k, suffix);
+    }
+    (*out)[u] = candidate;
+  }
+  return true;
 }
 
-/// Return the row name, generating one if names are absent.
-[[nodiscard]] std::string row_nm(const Model& model, Index i) {
-  const auto u = static_cast<std::size_t>(i);
-  if (u < model.row_names.size() && !model.row_names[u].empty()) return model.row_names[u];
-  return fmt::format("R{}", i);
+[[nodiscard]] bool build_names(const Model& model, Names* names, std::string* error) {
+  return build_names(model.col_names, model.num_cols(), 'C', "column", &names->col, error) &&
+         build_names(model.row_names, model.num_rows(), 'R', "row", &names->row, error);
 }
 
 /// Round-trip-safe decimal representation (17 significant digits guarantees bit-for-bit
@@ -54,12 +101,12 @@ namespace {
   return fmt::format("{:.17g}", nv);
 }
 
-/// Pick an objective row name that does not collide with any existing constraint row.
-[[nodiscard]] std::string pick_obj_row(const Model& model) {
+/// Pick an objective row name that does not collide with any constraint row's name.
+[[nodiscard]] std::string pick_obj_row(const Names& names) {
   static const char* kCandidates[] = {"obj", "COST", "OBJ", "OBJROW", "_obj"};
   for (const char* candidate : kCandidates) {
     bool clash = false;
-    for (const auto& name : model.row_names) {
+    for (const auto& name : names.row) {
       if (name == candidate) {
         clash = true;
         break;
@@ -124,6 +171,8 @@ void append_lp_term(std::string& buf, double coef, const std::string& var, bool&
 // -----------------------------------------------------------------------------------------
 
 bool write_mps(const std::string& path, const Model& model, std::string* error) {
+  Names names;
+  if (!build_names(model, &names, error)) return false;
   std::FILE* out = std::fopen(path.c_str(), "wb");
   if (out == nullptr) {
     if (error != nullptr) *error = fmt::format("{}: cannot open for writing", path);
@@ -132,7 +181,7 @@ bool write_mps(const std::string& path, const Model& model, std::string* error) 
 
   const Index m = model.num_rows();
   const Index n = model.num_cols();
-  const std::string obj_row = pick_obj_row(model);
+  const std::string obj_row = pick_obj_row(names);
 
   // MPS convention treats every N row beyond the objective as a free row and readers drop
   // them (mps_reader.cpp). Warn so the caller knows the round-trip loses these rows.
@@ -142,8 +191,8 @@ bool write_mps(const std::string& path, const Model& model, std::string* error) 
   }
   if (n_free_mps > 0) {
     fmt::print(stderr,
-               "write_mps: warning: dropped {} free row(s), which neither MPS nor "
-               "LP format can express\n",
+               "write_mps: warning: {} free row(s) written as extra N rows, which MPS readers "
+               "drop; the round-trip loses them\n",
                n_free_mps);
   }
 
@@ -165,7 +214,7 @@ bool write_mps(const std::string& path, const Model& model, std::string* error) 
       case MpsRowKind::kGe: type = 'G'; break;  // also ranged rows
       case MpsRowKind::kEq: type = 'E'; break;
     }
-    fmt::print(out, " {}  {}\n", type, row_nm(model, i));
+    fmt::print(out, " {}  {}\n", type, names.row[static_cast<std::size_t>(i)]);
   }
 
   // ---- COLUMNS ----
@@ -188,7 +237,7 @@ bool write_mps(const std::string& path, const Model& model, std::string* error) 
       in_integer = false;
     }
 
-    const std::string cname = col_nm(model, j);
+    const std::string cname = names.col[static_cast<std::size_t>(j)];
 
     // Build the list of (row_name, value) pairs for this column.
     std::vector<std::pair<std::string, double>> entries;
@@ -198,7 +247,7 @@ bool write_mps(const std::string& path, const Model& model, std::string* error) 
     const ColumnView cv = model.matrix.column(j);
     for (Index k = 0; k < cv.size; ++k) {
       if (cv.values[k] != 0.0) {
-        entries.emplace_back(row_nm(model, cv.rows[k]), cv.values[k]);
+        entries.emplace_back(names.row[static_cast<std::size_t>(cv.rows[k])], cv.values[k]);
       }
     }
 
@@ -242,7 +291,7 @@ bool write_mps(const std::string& path, const Model& model, std::string* error) 
       case MpsRowKind::kEq: rhs = lo; break;
     }
     if (rhs != 0.0) {
-      fmt::print(out, "    RHS  {}  {}\n", row_nm(model, i), xfmt(rhs));
+      fmt::print(out, "    RHS  {}  {}\n", names.row[static_cast<std::size_t>(i)], xfmt(rhs));
     }
   }
 
@@ -259,7 +308,8 @@ bool write_mps(const std::string& path, const Model& model, std::string* error) 
         fmt::print(out, "RANGES\n");
         any_range = true;
       }
-      fmt::print(out, "    RNG  {}  {}\n", row_nm(model, i), xfmt(hi - lo));
+      fmt::print(out, "    RNG  {}  {}\n", names.row[static_cast<std::size_t>(i)],
+                 xfmt(hi - lo));
     }
   }
 
@@ -279,7 +329,7 @@ bool write_mps(const std::string& path, const Model& model, std::string* error) 
     const double lo = model.col_lower[u];
     const double hi = model.col_upper[u];
     const bool is_int = (model.col_type[u] == VarType::kInteger);
-    const std::string cname = col_nm(model, j);
+    const std::string cname = names.col[static_cast<std::size_t>(j)];
 
     if (is_int) {
       // Binary: [0, 1] integer — single BV line overrides both bounds and marks integer.
@@ -361,12 +411,12 @@ bool write_mps(const std::string& path, const Model& model, std::string* error) 
     const Index hcols = model.hessian.num_cols();
     for (Index j = 0; j < hcols; ++j) {
       const ColumnView cv = model.hessian.column(j);
-      const std::string cj = col_nm(model, j);
+      const std::string cj = names.col[static_cast<std::size_t>(j)];
       for (Index k = 0; k < cv.size; ++k) {
         if (cv.values[k] != 0.0) {
           // Hessian is stored lower-triangular: col.rows[k] >= j.
-          fmt::print(out, "    {}  {}  {}\n", col_nm(model, cv.rows[k]), cj,
-                     xfmt(cv.values[k]));
+          fmt::print(out, "    {}  {}  {}\n", names.col[static_cast<std::size_t>(cv.rows[k])],
+                     cj, xfmt(cv.values[k]));
         }
       }
     }
@@ -389,6 +439,8 @@ bool write_lp(const std::string& path, const Model& model, std::string* error) {
     return false;
   }
 
+  Names names;
+  if (!build_names(model, &names, error)) return false;
   std::FILE* out = std::fopen(path.c_str(), "wb");
   if (out == nullptr) {
     if (error != nullptr) *error = fmt::format("{}: cannot open for writing", path);
@@ -419,7 +471,7 @@ bool write_lp(const std::string& path, const Model& model, std::string* error) {
     bool first = true;
     for (Index j = 0; j < n; ++j) {
       const auto u = static_cast<std::size_t>(j);
-      append_lp_term(expr, model.col_cost[u], col_nm(model, j), first);
+      append_lp_term(expr, model.col_cost[u], names.col[static_cast<std::size_t>(j)], first);
     }
     // Objective offset: write as a trailing constant.
     if (model.objective_offset != 0.0) {
@@ -450,14 +502,15 @@ bool write_lp(const std::string& path, const Model& model, std::string* error) {
     // Free rows (N type) are not constraints.
     if (lo == -kInfinity && hi == kInfinity) continue;
 
-    const std::string rname = row_nm(model, i);
+    const std::string rname = names.row[static_cast<std::size_t>(i)];
 
     // Build expression using the row view; column indices are in rv.rows[k].
     std::string expr;
     bool first = true;
     const ColumnView rv = by_row.row(i);
     for (Index k = 0; k < rv.size; ++k) {
-      append_lp_term(expr, rv.values[k], col_nm(model, rv.rows[k]), first);
+      append_lp_term(expr, rv.values[k], names.col[static_cast<std::size_t>(rv.rows[k])],
+                     first);
     }
     if (expr.empty()) expr = "0";
 
@@ -489,7 +542,7 @@ bool write_lp(const std::string& path, const Model& model, std::string* error) {
       fmt::print(out, "Bounds\n");
       any_bounds = true;
     }
-    const std::string cname = col_nm(model, j);
+    const std::string cname = names.col[static_cast<std::size_t>(j)];
 
     if (lo == -kInfinity && hi == kInfinity) {
       fmt::print(out, "  {} free\n", cname);
@@ -510,7 +563,7 @@ bool write_lp(const std::string& path, const Model& model, std::string* error) {
   for (Index j = 0; j < n; ++j) {
     const auto u = static_cast<std::size_t>(j);
     if (model.col_type[u] == VarType::kInteger) {
-      const std::string cname = col_nm(model, j);
+      const std::string cname = names.col[static_cast<std::size_t>(j)];
       if (model.col_lower[u] == 0.0 && model.col_upper[u] == 1.0) {
         binary_names += "  ";
         binary_names += cname;

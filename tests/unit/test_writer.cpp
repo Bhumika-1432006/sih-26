@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -513,15 +514,17 @@ void expect_models_identical(const Model& a, const Model& b) {
     EXPECT_DOUBLE_EQ(a.col_lower[u], b.col_lower[u]) << "col_lower[" << j << "]";
     EXPECT_DOUBLE_EQ(a.col_upper[u], b.col_upper[u]) << "col_upper[" << j << "]";
     EXPECT_EQ(a.col_type[u], b.col_type[u]) << "col_type[" << j << "]";
-    if (u < a.col_names.size() && u < b.col_names.size())
+    if (u < a.col_names.size() && u < b.col_names.size()) {
       EXPECT_EQ(a.col_names[u], b.col_names[u]) << "col_name[" << j << "]";
+    }
   }
   for (Index i = 0; i < a.num_rows(); ++i) {
     const auto u = static_cast<std::size_t>(i);
     EXPECT_DOUBLE_EQ(a.row_lower[u], b.row_lower[u]) << "row_lower[" << i << "]";
     EXPECT_DOUBLE_EQ(a.row_upper[u], b.row_upper[u]) << "row_upper[" << i << "]";
-    if (u < a.row_names.size() && u < b.row_names.size())
+    if (u < a.row_names.size() && u < b.row_names.size()) {
       EXPECT_EQ(a.row_names[u], b.row_names[u]) << "row_name[" << i << "]";
+    }
   }
   // Check every matrix nonzero by value at each (row, col) position.
   for (Index j = 0; j < a.num_cols(); ++j) {
@@ -672,7 +675,7 @@ TEST(ModelWriter, WriteLpRejectsQpModel) {
   EXPECT_NE(error.find("quadratic"), std::string::npos) << "error: " << error;
 }
 
-TEST(ModelWriter, FreRowIsDroppedWithRowCountDecremented) {
+TEST(ModelWriter, FreeRowIsDroppedWithRowCountDecremented) {
   // A model with one free row (no bound on either side) must round-trip without the free
   // row: neither MPS nor LP can express it. After read-back the model must have m-1 rows.
   Model model;
@@ -719,6 +722,71 @@ TEST(ModelWriter, FreRowIsDroppedWithRowCountDecremented) {
     EXPECT_EQ(recovered.num_rows(), model.num_rows() - 1)
         << "LP writer should skip the free row";
   }
+}
+
+TEST(ModelWriter, GeneratedNamesNeverCollideWithRealOnes) {
+  // Column 0 and column 2 are unnamed and column 1 is really called "C0"; row 0 is really
+  // called "R2" and the other two rows are unnamed. Naive generation writes "C0" twice and
+  // "R2" twice, and a reader binds both entries to one column: a different model, silently.
+  Model model = make_model();
+  model.col_names = {"", "C0", ""};
+  model.row_names = {"R2", "", ""};
+  ASSERT_EQ(model.validate(), "");
+
+  const auto check = [&](const std::string& suffix, auto write, auto read) {
+    const TempFile file("", suffix.c_str());
+    std::string error;
+    ASSERT_TRUE(write(file.path(), model, &error)) << error;
+    Model recovered;
+    const io::ReadResult result = read(file.path(), &recovered);
+    ASSERT_TRUE(result.ok) << result.error;
+    ASSERT_EQ(recovered.num_cols(), 3) << suffix;
+    ASSERT_EQ(recovered.num_rows(), 3) << suffix;
+    ASSERT_EQ(recovered.num_nonzeros(), model.num_nonzeros()) << suffix;
+    // The real names are where they were, and every name is distinct.
+    EXPECT_EQ(recovered.col_names[1], "C0") << suffix;
+    EXPECT_EQ(recovered.row_names[0], "R2") << suffix;
+    std::set<std::string> cols(recovered.col_names.begin(), recovered.col_names.end());
+    std::set<std::string> rows(recovered.row_names.begin(), recovered.row_names.end());
+    EXPECT_EQ(cols.size(), 3u) << suffix;
+    EXPECT_EQ(rows.size(), 3u) << suffix;
+    // And every coefficient is on the column and row it came from.
+    for (Index j = 0; j < 3; ++j) {
+      const ColumnView column = model.matrix.column(j);
+      for (Index k = 0; k < column.size; ++k) {
+        EXPECT_DOUBLE_EQ(recovered.matrix.at(column.rows[k], j), column.values[k])
+            << suffix << " entry (" << column.rows[k] << ", " << j << ")";
+      }
+    }
+  };
+  check(".mps", io::write_mps,
+        [](const std::string& path, Model* into) { return io::read_mps(path, into); });
+  check(".lp", io::write_lp,
+        [](const std::string& path, Model* into) { return io::read_lp(path, into); });
+}
+
+TEST(ModelWriter, ANameWithWhitespaceIsRefused) {
+  // Neither format quotes, both split on whitespace: a name with a space cannot be written
+  // faithfully, so the writer says so instead of producing a file that reads back wrong.
+  Model model = make_model();
+  model.col_names = {"AL PRIME", "BN", "MU"};
+  const TempFile mps_file("", ".mps");
+  const TempFile lp_file("", ".lp");
+  std::string error;
+  EXPECT_FALSE(io::write_mps(mps_file.path(), model, &error));
+  EXPECT_NE(error.find("whitespace"), std::string::npos) << error;
+  error.clear();
+  EXPECT_FALSE(io::write_lp(lp_file.path(), model, &error));
+  EXPECT_NE(error.find("whitespace"), std::string::npos) << error;
+}
+
+TEST(ModelWriter, DuplicateNamesAreRefused) {
+  Model model = make_model();
+  model.row_names = {"THRUPUT", "THRUPUT", "SULPHUR"};
+  const TempFile mps_file("", ".mps");
+  std::string error;
+  EXPECT_FALSE(io::write_mps(mps_file.path(), model, &error));
+  EXPECT_NE(error.find("twice"), std::string::npos) << error;
 }
 
 TEST(ModelWriter, WriteMpsFailsOnBadPath) {

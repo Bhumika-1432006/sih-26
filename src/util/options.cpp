@@ -418,7 +418,8 @@ const std::vector<OptionSpec>& Options::registry() {
                  std::string(""),
                  "Write the presolved model to this path before solving it. Extension "
                  "determines format: .lp -> CPLEX LP, anything else -> free MPS. "
-                 "Empty disables the dump.",
+                 "Empty disables the dump. Requires presolve: with presolve=false there "
+                 "is no presolved model, nothing is written, and a warning says so.",
                  0.0,
                  0.0,
                  {},

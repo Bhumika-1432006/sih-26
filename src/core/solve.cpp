@@ -425,6 +425,11 @@ Solution solve(const Model& model, const Options& options) {
       solution = presolve::postsolve(reduced, model, inner);
       solution.solve_seconds = timer.elapsed_seconds();
     } else {
+      if (!options.get_string("write_presolved").empty()) {
+        logger.warning(
+            "write_presolved: presolve is off, so there is no presolved model to write; "
+            "nothing was written");
+      }
       solution = run_lp_engine(model);
     }
     reconcile_status_with_measurement(&solution, options, logger, /*check_dual=*/true);
