@@ -409,6 +409,9 @@ class Solution:
         # without limit, checked together with the feasible point in the columns section.
         self.farkas: dict[str, float] = {}
         self.ray: dict[str, float] = {}
+        self.iis: list[tuple[str, str]] = []
+        # One witness per IIS element: (kind, name, {column name: value}).
+        self.iis_witnesses: list[tuple[str, str, dict[str, float]]] = []
 
     @property
     def status(self) -> str:
@@ -473,6 +476,8 @@ def parse_sol(path: Path) -> Solution:
             fields = split_record(line)
             if fields[0] == "begin":
                 block = fields[1]
+                if block == "iis_witness" and len(fields) >= 4:
+                    solution.iis_witnesses.append((fields[2], fields[3], {}))
                 continue
             if fields[0] == "end":
                 block = ""
@@ -485,6 +490,10 @@ def parse_sol(path: Path) -> Solution:
                 solution.farkas[fields[0]] = float(fields[1])
             elif block == "ray" and len(fields) >= 2:
                 solution.ray[fields[0]] = float(fields[1])
+            elif block == "iis" and len(fields) >= 2:
+                solution.iis.append((fields[0], fields[1]))
+            elif block == "iis_witness" and len(fields) >= 2 and solution.iis_witnesses:
+                solution.iis_witnesses[-1][2][fields[0]] = float(fields[1])
             elif block == "rows" and len(fields) >= 3:
                 solution.row_activity[fields[0]] = float(fields[1])
                 solution.row_dual[fields[0]] = float(fields[2])
@@ -557,6 +566,133 @@ def times(model: Model, x: list[float]) -> list[float]:
         for i, value in model.entries[j]:
             out[i] += value * x[j]
     return out
+
+
+def verify_iis(model: Model, solution: Solution, report: Report, primal_tol: float) -> None:
+    """Check the two properties that make a set of constraints an IIS (#217).
+
+    1. INFEASIBLE ON ITS OWN. The solver writes, as the farkas section, the certificate of
+       the subsystem rather than of the whole model, so verify_farkas() has already proved
+       that *some* aggregate of rows contradicts the column box. What remains is to check
+       that the aggregate uses nothing outside the IIS: every row with a nonzero multiplier
+       is an IIS row, and every column bound the aggregate leans on is an IIS bound.
+
+    2. IRREDUCIBLE. For every element the solver writes a witness: a point that satisfies
+       every other element and violates that one. Checking a witness is arithmetic - row
+       activities against row bounds, values against column bounds - and needs no solver.
+
+    The solver says `iis_irreducible not-claimed` in the header when one of its trial solves
+    ended in neither verdict; then the set may be a superset of an IIS, no witnesses are
+    written, and this function notes that rather than failing a claim that was never made.
+    """
+    if not solution.iis:
+        return
+
+    row_iis = [name for kind, name in solution.iis if kind == "row"]
+    col_lo_iis = [name for kind, name in solution.iis if kind == "col_lo"]
+    col_hi_iis = [name for kind, name in solution.iis if kind == "col_hi"]
+
+    report.note("IIS",
+                f"{len(solution.iis)} element(s): "
+                f"{len(row_iis)} row(s), {len(col_lo_iis)} col_lo bound(s), "
+                f"{len(col_hi_iis)} col_hi bound(s)")
+
+    unknown_rows = [n for n in row_iis if n not in model.row_index]
+    if not report.check(not unknown_rows, "IIS rows exist in model",
+                        f"unknown row name(s): {unknown_rows}" if unknown_rows
+                        else "every IIS row names a row of the model"):
+        return
+    unknown_cols = [n for n in col_lo_iis + col_hi_iis if n not in model.col_index]
+    if not report.check(not unknown_cols, "IIS columns exist in model",
+                        f"unknown column name(s): {unknown_cols}" if unknown_cols
+                        else "every IIS bound names a column of the model"):
+        return
+
+    claimed = solution.header.get("iis_irreducible", "not-claimed")
+    if claimed != "yes":
+        report.note("IIS properties",
+                    "not claimed by the solver (a trial solve was inconclusive), so the set "
+                    "may be a superset of an IIS; neither property is checked")
+        return
+
+    rows = set(row_iis)
+    lo = set(col_lo_iis)
+    hi = set(col_hi_iis)
+
+    # ---- 1. the certificate lives inside the IIS ------------------------------------------
+    y = [solution.farkas.get(name, 0.0) for name in model.row_names]
+    if any(y):
+        outside_rows = [model.row_names[i] for i, m in enumerate(y)
+                        if m != 0.0 and model.row_names[i] not in rows]
+        d = transpose_times(model, y)
+        scale = max([1.0] + [abs(v) for v in d])
+        outside_bounds = []
+        for j in range(model.num_cols):
+            if d[j] > 1e-12 * scale and model.col_names[j] not in hi:
+                outside_bounds.append(model.col_names[j] + " (upper)")
+            elif d[j] < -1e-12 * scale and model.col_names[j] not in lo:
+                outside_bounds.append(model.col_names[j] + " (lower)")
+        report.check(not outside_rows and not outside_bounds, "IIS is infeasible on its own",
+                     "the certificate's multipliers and the bounds its aggregate leans on "
+                     "all belong to the IIS, so the proof above proves the subsystem alone"
+                     if not outside_rows and not outside_bounds
+                     else "the certificate reaches outside the IIS: rows "
+                          + ", ".join(outside_rows[:5]) + "; bounds "
+                          + ", ".join(outside_bounds[:5]))
+    else:
+        report.check(False, "IIS is infeasible on its own",
+                     "no certificate in the file, so the subsystem's infeasibility is unproved")
+
+    # ---- 2. every element is necessary: its witness satisfies all the others ---------------
+    witnesses = {(kind, name): point for kind, name, point in solution.iis_witnesses}
+    missing = [f"{kind} {name}" for kind, name in solution.iis if (kind, name) not in witnesses]
+    if not report.check(not missing, "IIS witnesses present",
+                        f"no witness for {len(missing)} element(s): " + ", ".join(missing[:5])
+                        if missing else f"one witness for each of the {len(solution.iis)} elements"):
+        return
+
+    def violation(value: float, lower: float, upper: float) -> float:
+        """Relative distance outside [lower, upper], zero inside."""
+        below = lower - value if math.isfinite(lower) else 0.0
+        above = value - upper if math.isfinite(upper) else 0.0
+        worst = max(below, above, 0.0)
+        return worst / max(1.0, abs(value),
+                           abs(lower) if math.isfinite(lower) else 0.0,
+                           abs(upper) if math.isfinite(upper) else 0.0)
+
+    failures = []
+    for kind, name in solution.iis:
+        point = witnesses[(kind, name)]
+        x = [point.get(col, 0.0) for col in model.col_names]
+        activity = times(model, x)
+        for other in row_iis:
+            i = model.row_index[other]
+            v = violation(activity[i], model.row_lower[i], model.row_upper[i])
+            is_self = kind == "row" and other == name
+            if is_self and v <= primal_tol:
+                failures.append(f"{kind} {name}: its witness satisfies it, so it is not needed")
+            elif not is_self and v > primal_tol:
+                failures.append(f"{kind} {name}: witness violates row {other} by {v:.3e}")
+        for other in col_lo_iis:
+            j = model.col_index[other]
+            v = violation(x[j], model.col_lower[j], math.inf)
+            is_self = kind == "col_lo" and other == name
+            if is_self and v <= primal_tol:
+                failures.append(f"{kind} {name}: its witness satisfies it, so it is not needed")
+            elif not is_self and v > primal_tol:
+                failures.append(f"{kind} {name}: witness violates lower bound of {other} by {v:.3e}")
+        for other in col_hi_iis:
+            j = model.col_index[other]
+            v = violation(x[j], -math.inf, model.col_upper[j])
+            is_self = kind == "col_hi" and other == name
+            if is_self and v <= primal_tol:
+                failures.append(f"{kind} {name}: its witness satisfies it, so it is not needed")
+            elif not is_self and v > primal_tol:
+                failures.append(f"{kind} {name}: witness violates upper bound of {other} by {v:.3e}")
+    report.check(not failures, "IIS is irreducible",
+                 f"each of the {len(solution.iis)} witnesses satisfies the other "
+                 f"{len(solution.iis) - 1} element(s) and violates its own"
+                 if not failures else "; ".join(failures[:4]))
 
 
 def verify_farkas(model: Model, solution: Solution, report: Report) -> Report:
@@ -738,7 +874,9 @@ def verify(model: Model, solution: Solution, primal_tol: float, dual_tol: float,
         return report
 
     if solution.status == "infeasible":
-        return verify_farkas(model, solution, report)
+        verify_farkas(model, solution, report)
+        verify_iis(model, solution, report, primal_tol)
+        return report
 
     # A VERDICT THAT CLAIMS NOTHING IS NOT CHECKED AS IF IT DID (#200). A numerical failure, a
     # solve that never started, a model this solver refuses - none of these assert a point, and

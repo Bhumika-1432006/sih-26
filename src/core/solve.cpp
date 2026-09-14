@@ -17,6 +17,7 @@
 
 #include <fmt/format.h>
 
+#include "core/iis.hpp"
 #include "core/status_guard.hpp"
 #include "presolve/presolve.hpp"
 #include "sankhya/certificate.hpp"
@@ -435,6 +436,7 @@ Solution solve(const Model& model, const Options& options) {
     reconcile_status_with_measurement(&solution, options, logger, /*check_dual=*/true);
     refuse_a_non_finite_answer(&solution, logger);
     keep_only_a_proved_certificate(&solution, model, logger);
+    compute_iis(model, &solution, options, logger);
     logger.info("Result: {}  objective {:.10g}  {} iterations  {:.3f}s",
                 to_string(solution.status), solution.objective, solution.iterations,
                 solution.solve_seconds);
