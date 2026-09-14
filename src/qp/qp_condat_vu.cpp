@@ -40,6 +40,7 @@
 // of the project's evidence rests on.
 
 #include "sankhya/qp.hpp"
+#include "sankhya/solve_control.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -50,6 +51,7 @@
 
 #include <fmt/format.h>
 
+#include "../core/stop_controller.hpp"
 #include "sankhya/timer.hpp"
 #include "sankhya/tolerances.hpp"
 
@@ -157,7 +159,8 @@ void hessian_multiply(const Model& model, const std::vector<double>& x,
 
 }  // namespace
 
-Solution solve_convex_qp(const Model& model, const Options& options, Logger& logger) {
+Solution solve_convex_qp(const Model& model, const Options& options, Logger& logger,
+                         SolveControl* control) {
   Timer timer;
   Solution solution;
   solution.allocate_for(model);
@@ -224,7 +227,16 @@ Solution solve_convex_qp(const Model& model, const Options& options, Logger& log
   std::string message;
   SolveStatus status = SolveStatus::kIterationLimit;
 
-  for (; iterations < iteration_limit; ++iterations) {
+  StopController stop(control, timer, time_limit);
+  SolveStatus stop_status;
+
+  while (true) {
+    if (iterations >= iteration_limit) {
+      status = SolveStatus::kIterationLimit;
+      message = fmt::format("iteration limit {} reached", iteration_limit);
+      break;
+    }
+    ++iterations;
     // Primal: x' = proj_box( x - tau (c + Qx + A'y) ). The Qx term is the whole difference
     // from the LP engine; everything else is Chambolle-Pock unchanged.
     hessian_multiply(model, x, &qx);
@@ -251,10 +263,20 @@ Solution solve_convex_qp(const Model& model, const Options& options, Logger& log
     // ---- termination, every 50 iterations -------------------------------------------------
     if (iterations % 50 != 0) continue;
 
-    if (time_limit < std::numeric_limits<double>::max() &&
-        timer.elapsed_seconds() > time_limit) {
-      status = SolveStatus::kTimeLimit;
-      message = fmt::format("time limit {:.3g}s reached", time_limit);
+    if (stop.should_stop(
+            [&]() {
+              Progress p;
+              p.phase = Progress::Phase::kLp;
+              p.iterations = iterations;
+              p.objective = kInfinity;  // QP does not track it mid-loop
+              p.best_bound = -kInfinity;
+              return p;
+            },
+            &stop_status)) {
+      status = stop_status;
+      message = stop_status == SolveStatus::kTimeLimit
+                    ? fmt::format("time limit {:.3g}s reached", time_limit)
+                    : "interrupted";
       break;
     }
 

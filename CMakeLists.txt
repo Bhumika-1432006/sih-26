@@ -180,12 +180,14 @@ endif()
 set(SANKHYA_CORE_SOURCES
   src/api/c_api.cpp
   src/core/certificate.cpp
+  src/core/iis.cpp
   src/core/model.cpp
   src/core/solve.cpp
   src/io/line_reader.cpp
   src/io/lp_reader.cpp
   src/io/mps_bounds.cpp
   src/io/mps_reader.cpp
+  src/io/model_writer.cpp
   src/io/writer.cpp
   src/qp/convexity.cpp
   src/qp/qp_condat_vu.cpp

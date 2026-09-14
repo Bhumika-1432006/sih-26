@@ -31,6 +31,7 @@
 #define SANKHYA_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -62,7 +63,9 @@ typedef enum sankhya_solve_status {
   SANKHYA_TIME_LIMIT = 6,
   SANKHYA_NODE_LIMIT = 7,
   SANKHYA_NUMERICAL_ERROR = 8,
-  SANKHYA_MODEL_ERROR = 9
+  SANKHYA_MODEL_ERROR = 9,
+  /** 10 is INFEASIBLE_OR_UNBOUNDED above. */
+  SANKHYA_INTERRUPTED = 11
 } sankhya_solve_status;
 
 /* ---- Opaque handles -------------------------------------------------------------------- */
@@ -166,6 +169,38 @@ int sankhya_model_num_nonzeros(const sankhya_model* model);
  */
 sankhya_status sankhya_model_validate(const sankhya_model* model);
 
+/* ---- Progress Callback ------------------------------------------------------------------ */
+
+typedef enum sankhya_progress_phase {
+  SANKHYA_PHASE_PRESOLVE = 0,
+  SANKHYA_PHASE_LP = 1,
+  SANKHYA_PHASE_TREE = 2
+} sankhya_progress_phase;
+
+typedef struct sankhya_progress {
+  sankhya_progress_phase phase;
+  int64_t iterations;
+  int64_t nodes;
+  double objective;
+  double best_bound;
+  double gap;
+  double elapsed_seconds;
+  int64_t open_nodes;
+} sankhya_progress;
+
+/**
+ * Register a progress callback. It will be called periodically during the solve.
+ * If the callback returns non-zero, the solver will interrupt at the next safe point.
+ */
+sankhya_status sankhya_set_callback(sankhya_model* model,
+                                    int (*callback)(const sankhya_progress*, void*),
+                                    void* user_data);
+
+/**
+ * Request an asynchronous interruption from another thread or a signal handler.
+ */
+sankhya_status sankhya_model_interrupt(sankhya_model* model);
+
 /* ---- Options ---------------------------------------------------------------------------- */
 
 /** Options preset to their documented defaults. Run `sankhya options` to list them. */
@@ -173,7 +208,8 @@ sankhya_options* sankhya_options_create(void);
 void sankhya_options_free(sankhya_options* options);
 
 sankhya_status sankhya_options_set_bool(sankhya_options* options, const char* name, int value);
-sankhya_status sankhya_options_set_int(sankhya_options* options, const char* name, long value);
+sankhya_status sankhya_options_set_int(sankhya_options* options, const char* name,
+                                       int64_t value);
 sankhya_status sankhya_options_set_double(sankhya_options* options, const char* name,
                                           double value);
 sankhya_status sankhya_options_set_string(sankhya_options* options, const char* name,
@@ -187,8 +223,11 @@ sankhya_status sankhya_options_set_string(sankhya_options* options, const char* 
  * `options` may be NULL for the defaults. The return value reports whether the CALL
  * succeeded, not what the solver concluded: a model proved infeasible returns SANKHYA_OK
  * with a solution whose status is SANKHYA_INFEASIBLE. Check both.
+ *
+ * The `model` parameter is non-const because the solver may register interruption state
+ * or a progress callback on it during the solve.
  */
-sankhya_status sankhya_solve(const sankhya_model* model, const sankhya_options* options,
+sankhya_status sankhya_solve(sankhya_model* model, const sankhya_options* options,
                              sankhya_solution** solution);
 
 void sankhya_solution_free(sankhya_solution* solution);
@@ -203,8 +242,8 @@ double sankhya_solution_objective(const sankhya_solution* solution);
 /** Best proven bound. Equals the objective when optimality was proved. */
 double sankhya_solution_dual_bound(const sankhya_solution* solution);
 
-long sankhya_solution_iterations(const sankhya_solution* solution);
-long sankhya_solution_nodes(const sankhya_solution* solution);
+int64_t sankhya_solution_iterations(const sankhya_solution* solution);
+int64_t sankhya_solution_nodes(const sankhya_solution* solution);
 double sankhya_solution_seconds(const sankhya_solution* solution);
 
 /**

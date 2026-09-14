@@ -8,10 +8,12 @@
 // says optimal, the point is integral and feasible, the bound matches the objective. Only a
 // second, independent search over the same instance catches it.
 
+#include <chrono>
 #include <cmath>
 #include <fstream>
 #include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -19,6 +21,7 @@
 
 #include "sankhya/model.hpp"
 #include "sankhya/options.hpp"
+#include "sankhya/solve_control.hpp"
 #include "sankhya/tolerances.hpp"
 
 #include "oracles/lp_generator.hpp"
@@ -214,6 +217,84 @@ TEST(BranchAndBound, ZeroOneKnapsack) {
   EXPECT_NEAR(s.col_value[0], 1.0, 1e-6);
   EXPECT_NEAR(s.col_value[1], 1.0, 1e-6);
   EXPECT_DOUBLE_EQ(s.integrality_violation, 0.0);
+}
+
+TEST(BranchAndBound, RespectsSolveControlInterruptionWithCallback) {
+  // Use a fractional root relaxation (capacity 10 instead of 9) so the solver
+  // genuinely has to branch, ensuring it cannot trivially finish before the next poll.
+  const Model model =
+      make_milp({{5.0, 4.0, 3.0, 2.0}}, {-kInfinity}, {10.0}, {-10.0, -7.0, -4.0, -3.0},
+                {1.0, 1.0, 1.0, 1.0}, {true, true, true, true});
+
+  sankhya::SolveControl control;
+  int callback_count = 0;
+  control.progress_callback = [&](const sankhya::Progress&) {
+    if (++callback_count == 1) {
+      // Sleep to guarantee the 0.1s throttle expires before the next iteration/node.
+      std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    }
+    if (callback_count == 2) {
+      // Return nonzero to interrupt on the 2nd callback.
+      return 1;
+    }
+    return 0;
+  };
+
+  const Solution s = solve(model, mip_options(), &control);
+  EXPECT_EQ(s.status, SolveStatus::kInterrupted);
+  EXPECT_TRUE(claims_a_point(s));
+  EXPECT_EQ(callback_count, 2);
+  EXPECT_GT(s.nodes, 0);
+  EXPECT_LE(s.nodes, 100);  // node count is bounded
+}
+
+TEST(BranchAndBound, TheCallbackRateIsBoundedAcrossTheTree) {
+  // #223's second acceptance box: a counting callback on a search of many nodes is called
+  // a bounded number of times. The window is 100 ms; a MILP whose nodes are microseconds
+  // must not call once per node, which is what a per-engine window did (every node's LP
+  // built its own StopController and fired the callback on its first check).
+  //
+  // A market-split instance (Cornuejols & Dawande 1998): three equalities over twenty
+  // binaries with coefficients in [0, 99] and right-hand sides at half the row sums. These
+  // are built to defeat branch-and-bound, and the node limit is what ends the search - so
+  // the node count is fixed by construction rather than by how clever the search is.
+  constexpr int kRows = 3;
+  constexpr int kCols = 20;
+  std::mt19937 rng(20260914);
+  std::uniform_int_distribution<int> coefficient(0, 99);
+  std::vector<std::vector<double>> rows;
+  std::vector<double> rhs;
+  for (int i = 0; i < kRows; ++i) {
+    std::vector<double> row;
+    double sum = 0.0;
+    for (int j = 0; j < kCols; ++j) {
+      row.push_back(static_cast<double>(coefficient(rng)));
+      sum += row.back();
+    }
+    rows.push_back(row);
+    rhs.push_back(std::floor(sum / 2.0));
+  }
+  const Model model =
+      make_milp(rows, rhs, rhs, std::vector<double>(kCols, 1.0),
+                std::vector<double>(kCols, 1.0), std::vector<bool>(kCols, true));
+
+  sankhya::SolveControl control;
+  int callback_count = 0;
+  control.progress_callback = [&](const sankhya::Progress&) {
+    ++callback_count;
+    return 0;
+  };
+  Options options = mip_options();
+  options.set_int("node_limit", 1500);
+  const Solution s = solve(model, options, &control);
+
+  ASSERT_GE(s.nodes, 500) << "the instance was meant to take the search to its node limit: "
+                          << to_string(s.status) << " " << s.message;
+  EXPECT_GE(callback_count, 1);
+  const double allowed = s.solve_seconds / 0.1 + 2.0;
+  EXPECT_LE(static_cast<double>(callback_count), allowed)
+      << callback_count << " callbacks over " << s.nodes << " nodes in " << s.solve_seconds
+      << " s: the window is per engine call, not per solve";
 }
 
 TEST(BranchAndBound, TheRelaxationIsNotTheAnswer) {

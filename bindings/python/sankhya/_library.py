@@ -144,13 +144,35 @@ def _declare(lib: ctypes.CDLL) -> None:
     lib.sankhya_model_validate.argtypes = [model_p]
     lib.sankhya_model_validate.restype = ctypes.c_int
 
+    # Callback
+    class sankhya_progress(ctypes.Structure):
+        _fields_ = [
+            ("phase", ctypes.c_int),
+            ("iterations", ctypes.c_int64),
+            ("nodes", ctypes.c_int64),
+            ("objective", ctypes.c_double),
+            ("best_bound", ctypes.c_double),
+            ("gap", ctypes.c_double),
+            ("elapsed_seconds", ctypes.c_double),
+            ("open_nodes", ctypes.c_int64),
+        ]
+    lib.sankhya_progress = sankhya_progress
+    callback_type = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.POINTER(sankhya_progress), ctypes.c_void_p)
+    lib.sankhya_callback_type = callback_type
+
+    lib.sankhya_set_callback.argtypes = [model_p, callback_type, ctypes.c_void_p]
+    lib.sankhya_set_callback.restype = ctypes.c_int
+
+    lib.sankhya_model_interrupt.argtypes = [model_p]
+    lib.sankhya_model_interrupt.restype = ctypes.c_int
+
     lib.sankhya_options_create.argtypes = []
     lib.sankhya_options_create.restype = options_p
     lib.sankhya_options_free.argtypes = [options_p]
     lib.sankhya_options_free.restype = None
     lib.sankhya_options_set_bool.argtypes = [options_p, ctypes.c_char_p, ctypes.c_int]
     lib.sankhya_options_set_bool.restype = ctypes.c_int
-    lib.sankhya_options_set_int.argtypes = [options_p, ctypes.c_char_p, ctypes.c_long]
+    lib.sankhya_options_set_int.argtypes = [options_p, ctypes.c_char_p, ctypes.c_int64]
     lib.sankhya_options_set_int.restype = ctypes.c_int
     lib.sankhya_options_set_double.argtypes = [options_p, ctypes.c_char_p, ctypes.c_double]
     lib.sankhya_options_set_double.restype = ctypes.c_int
@@ -173,7 +195,7 @@ def _declare(lib: ctypes.CDLL) -> None:
         getattr(lib, name).restype = ctypes.c_double
     for name in ("sankhya_solution_iterations", "sankhya_solution_nodes"):
         getattr(lib, name).argtypes = [solution_p]
-        getattr(lib, name).restype = ctypes.c_long
+        getattr(lib, name).restype = ctypes.c_int64
     for name in ("sankhya_solution_col_values", "sankhya_solution_row_activities",
                  "sankhya_solution_row_duals", "sankhya_solution_col_duals"):
         getattr(lib, name).argtypes = [solution_p, c_double_p, ctypes.c_int]

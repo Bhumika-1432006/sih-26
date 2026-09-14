@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "sankhya/options.hpp"
+#include "sankhya/solve_control.hpp"
 #include "sankhya/sparse.hpp"
 #include "sankhya/tolerances.hpp"
 #include "sankhya/types.hpp"
@@ -73,45 +74,22 @@ enum class SolveStatus : std::uint8_t {
   /// achieved gap in the message (#188).
   kFeasible,
   kIterationLimit,
+  /// The point in hand when the limit fell. On a MILP with no incumbent yet, that point is
+  /// the last node's LP relaxation - fractional, and said so in the message - because a
+  /// limited search that found nothing still has a point to show, and a caller who wants
+  /// integrality reads integrality_violation (#223).
   kTimeLimit,
   kNodeLimit,
   kNumericalError,
-  kModelError
+  kModelError,
+  /// Stopped by the caller - a progress callback that returned non-zero, SolveControl::
+  /// interrupt(), or SIGINT on the CLI. Carries a point exactly as kTimeLimit does (#223).
+  kInterrupted
 };
 
-/// Does a solve ending in this state hand back a point?
-///
-/// The question a writer, a checker and a caller all have to answer, asked once here so they
-/// cannot answer it differently (#200). Getting it wrong in the permissive direction is what
-/// #191 was: an `infeasible` answer was written as a full all-zero point, and the project's
-/// own independent checker read that point, found it violated the rows, and printed REJECTED
-/// at a correct answer. That was fixed for `infeasible` alone, and every other verdict with
-/// nothing to show kept the bug.
-///
-/// `kUnbounded` says yes deliberately. Since #191 it carries the feasible point its ray
-/// starts from, because a ray that begins outside the feasible region proves nothing, and a
-/// checker needs both halves.
-///
-/// The limit states say yes because they normally stop with an iterate or an incumbent in
-/// hand. The one exception is a node limit reached before branch and bound found any integer
-/// point, which reports no objective and infinite gaps rather than a point (see
-/// `src/mip/branch_and_bound.cpp`); that case predates this predicate and is unchanged by it.
-[[nodiscard]] constexpr bool claims_a_point(SolveStatus status) noexcept {
-  switch (status) {
-    case SolveStatus::kOptimal:
-    case SolveStatus::kFeasible:
-    case SolveStatus::kUnbounded:
-    case SolveStatus::kIterationLimit:
-    case SolveStatus::kTimeLimit:
-    case SolveStatus::kNodeLimit: return true;
-    case SolveStatus::kNotSolved:
-    case SolveStatus::kInfeasible:
-    case SolveStatus::kInfeasibleOrUnbounded:
-    case SolveStatus::kNumericalError:
-    case SolveStatus::kModelError: return false;
-  }
-  return false;
-}
+[[nodiscard]] constexpr bool claims_a_point(SolveStatus status) noexcept;
+
+// =========================================================================================
 
 /// Human-readable name for a status, for logs and the JSON result blob.
 [[nodiscard]] const char* to_string(SolveStatus status) noexcept;
@@ -268,6 +246,8 @@ class Solution {
   // which is this class's established way of saying "the engine produced nothing of that
   // kind". See include/sankhya/certificate.hpp for what they mean and how they are checked.
 
+  /// A valid point has all columns and row activities populated and semantically valid.
+
   /// Farkas multipliers, one per row, when `status` is kInfeasible and the engine could
   /// prove it. Aggregating the rows with these weights yields an inequality no point in the
   /// column box satisfies. Empty when no proof was produced - presolve concludes
@@ -290,6 +270,38 @@ class Solution {
   std::vector<double> col_ranging_upper;
   std::vector<double> row_ranging_lower;
   std::vector<double> row_ranging_upper;
+
+  // ---- Irreducible Infeasible Subsystem (IIS), computed by the deletion filter (#217) ----
+  //
+  // An ADDITION to this frozen interface, called out here as farkas_dual was in #191. These
+  // default to empty; every existing consumer ignores them. Populated only when status is
+  // kInfeasible, a Farkas certificate exists, and the compute_iis option is enabled.
+  //
+  // Algorithm: Chinneck & Dravnieks, "Locating minimal infeasible constraint sets in linear
+  // programs", ORSA J. Computing 3(2) (1991). Starting from the k rows and column bounds
+  // the Farkas certificate names, remove each one in turn, re-solve, and keep it out
+  // permanently if the sub-problem stays infeasible. The result is irreducible: removing
+  // any single element from it makes the sub-system feasible.
+
+  /// Row indices (0-based) that form the IIS.
+  std::vector<Index> iis_rows;
+  /// Column indices (0-based) whose lower bound is in the IIS.
+  std::vector<Index> iis_col_lo;
+  /// Column indices (0-based) whose upper bound is in the IIS.
+  std::vector<Index> iis_col_hi;
+  /// One witness per IIS element, in the order iis_rows, iis_col_lo, iis_col_hi: a point
+  /// (num_cols values) that satisfies every other element of the IIS and violates that one.
+  /// It is the deletion filter's own evidence that the element is necessary - the trial
+  /// solve that kept it - retained so that tools/verify_solution.py can check
+  /// irreducibility by arithmetic alone. Empty when iis_inconclusive is set. When an IIS is
+  /// reported, farkas_dual is the certificate of the IIS itself: its support lies inside
+  /// iis_rows and the bounds it uses are iis_col_lo / iis_col_hi, so the same checker
+  /// proves the subsystem infeasible on its own.
+  std::vector<std::vector<double>> iis_witnesses;
+  /// True when a trial solve ended in neither verdict (a limit or a numerical error), or the
+  /// final certificate could not be re-proved: the candidates concerned were kept, the IIS
+  /// may not be irreducible, and the .sol file says `iis_irreducible not-claimed`.
+  bool iis_inconclusive = false;
 
   // ---- Reported quality. Never assumed - always measured before reporting. -------------
 
@@ -371,9 +383,25 @@ class Solution {
   /// Free-form detail, especially for kNumericalError and kModelError.
   std::string message;
 
-  /// True when the status indicates a usable primal point.
-  [[nodiscard]] bool has_primal_values() const noexcept {
-    return status == SolveStatus::kOptimal || status == SolveStatus::kFeasible;
+  /// True when the status says a point is reported; the same answer as
+  /// claims_a_point(status), kept because this interface is frozen (CLAUDE.md).
+  [[nodiscard]] bool has_primal_values() const noexcept { return claims_a_point(status); }
+
+  /// Clear the vectors and quality measurements, leaving the status intact.
+  void clear_values() {
+    col_value.clear();
+    row_activity.clear();
+    row_dual.clear();
+    col_dual.clear();
+    col_status.clear();
+    row_status.clear();
+    objective = 0.0;
+    dual_bound = 0.0;
+    primal_infeasibility = 0.0;
+    primal_infeasibility_scaled = 0.0;
+    dual_infeasibility = 0.0;
+    dual_infeasibility_scaled = 0.0;
+    integrality_violation = 0.0;
   }
 
   /// Allocate every vector to match `model`, filled with zeros / kUnknown.
@@ -385,6 +413,46 @@ class Solution {
   void recompute_quality(const Model& model);
 };
 
+/// Does a solve ending in this state hand back a point?
+///
+/// The question a writer, a checker and a caller all have to answer, asked once here so they
+/// cannot answer it differently (#200). Getting it wrong in the permissive direction is what
+/// #191 was: an `infeasible` answer was written as a full all-zero point, and the project's
+/// own independent checker read that point, found it violated the rows, and printed REJECTED
+/// at a correct answer. That was fixed for `infeasible` alone, and every other verdict with
+/// nothing to show kept the bug.
+///
+/// `kUnbounded` says yes deliberately. Since #191 it carries the feasible point its ray
+/// starts from, because a ray that begins outside the feasible region proves nothing, and a
+/// checker needs both halves.
+///
+/// The limit states say yes because they normally stop with an iterate or an incumbent in
+/// hand. The one exception is a node limit reached before branch and bound found any integer
+/// point, which reports no objective and infinite gaps rather than a point (see
+/// `src/mip/branch_and_bound.cpp`); that case predates this predicate and is unchanged by it.
+///
+[[nodiscard]] constexpr bool claims_a_point(SolveStatus status) noexcept {
+  switch (status) {
+    case SolveStatus::kOptimal:
+    case SolveStatus::kFeasible:
+    case SolveStatus::kUnbounded:
+    case SolveStatus::kIterationLimit:
+    case SolveStatus::kTimeLimit:
+    case SolveStatus::kNodeLimit:
+    case SolveStatus::kInterrupted: return true;
+    case SolveStatus::kNotSolved:
+    case SolveStatus::kInfeasible:
+    case SolveStatus::kInfeasibleOrUnbounded:
+    case SolveStatus::kNumericalError:
+    case SolveStatus::kModelError: return false;
+    default: return false;
+  }
+}
+
+[[nodiscard]] inline bool claims_a_point(const Solution& solution) noexcept {
+  return claims_a_point(solution.status);
+}
+
 // =========================================================================================
 // The single entry point
 // =========================================================================================
@@ -394,6 +462,7 @@ class Solution {
 /// This is the seam. The dispatcher picks an engine from the model class (LP / MILP / QP /
 /// MIQP) and the "algorithm" option, and future engines are added here and nowhere else.
 /// It never throws: every failure, including a malformed model, comes back as a status.
-[[nodiscard]] Solution solve(const Model& model, const Options& options);
+[[nodiscard]] Solution solve(const Model& model, const Options& options,
+                             SolveControl* control = nullptr);
 
 }  // namespace sankhya

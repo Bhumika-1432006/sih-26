@@ -58,6 +58,7 @@
 
 #include <fmt/format.h>
 
+#include "../core/stop_controller.hpp"
 #include "sankhya/timer.hpp"
 #include "sankhya/tolerances.hpp"
 
@@ -371,7 +372,8 @@ bool Simplex::refactorize() {
   // singular under partial pivoting is genuinely singular.
   static constexpr double kThresholdLadder[] = {tol::kMarkowitzThreshold, 0.1, 0.5, 1.0};
   for (std::size_t attempt = 0; attempt < std::size(kThresholdLadder); ++attempt) {
-    if (lu_.factorize(basis_columns_, m_, tol::kPivotTolerance, kThresholdLadder[attempt])) {
+    if (lu_.factorize(basis_columns_, m_, tol::kPivotTolerance, kThresholdLadder[attempt],
+                      deadline_)) {
       // PER FACTORIZATION, NOT A LATCH. This used to latch true for the rest of the solve,
       // which disabled the basis update permanently and made every later iteration
       // refactorize from scratch: measured on modszk1, 109,827 refactorizations in 80
@@ -413,6 +415,12 @@ bool Simplex::refactorize() {
                       pivot);
       return true;
     }
+    // Told to stop, not unable to: the ladder and the repair below would only run the same
+    // clock out further on the same basis.
+    if (lu_.stopped_early()) {
+      factors_abandoned_ = true;
+      return false;
+    }
   }
 
   // The ladder ran out at full partial pivoting, so this basis is rank deficient rather than
@@ -435,7 +443,7 @@ bool Simplex::refactorize() {
         target.size = 1;
       }
     }
-    if (lu_.factorize(basis_columns_, m_, tol::kPivotTolerance, 1.0)) {
+    if (lu_.factorize(basis_columns_, m_, tol::kPivotTolerance, 1.0, deadline_)) {
       basis_needed_stricter_threshold_ = true;
       // THE BASIS CHANGED, SO THE BASIC VALUES DESCRIBE A BASIS THAT NO LONGER EXISTS.
       //
@@ -449,8 +457,31 @@ bool Simplex::refactorize() {
       compute_basic_values();
       return true;
     }
+    if (lu_.stopped_early()) factors_abandoned_ = true;
   }
   return false;
+}
+
+void Simplex::arm_deadline(const Timer& timer) {
+  factors_abandoned_ = false;
+  if (time_limit_ > 0.0 && std::isfinite(time_limit_)) {
+    deadline_ = [&timer, this] { return timer.elapsed_seconds() > time_limit_; };
+  } else {
+    deadline_ = {};
+  }
+}
+
+Solution Simplex::factorization_failed(Count iterations, const Timer& timer) {
+  if (factors_abandoned_) {
+    return finish(SolveStatus::kTimeLimit,
+                  fmt::format("time limit {:g}s reached inside the basis factorization, which "
+                              "was abandoned",
+                              time_limit_),
+                  iterations, timer.elapsed_seconds());
+  }
+  return finish(SolveStatus::kNumericalError,
+                fmt::format("basis became singular at iteration {}", iterations), iterations,
+                timer.elapsed_seconds());
 }
 
 void Simplex::perturb_bounds() {
@@ -617,6 +648,7 @@ void Simplex::refine_final_basis() {
 }
 
 void Simplex::compute_basic_values() {
+  if (factors_abandoned_) return;  // no factors to solve with (#208); x_ is as it was
   // [A | -I][x ; s] = 0, so B x_B = -N x_N.
   std::vector<double> rhs(static_cast<std::size_t>(m_), 0.0);
   for (Index k = 0; k < total_; ++k) {
@@ -659,6 +691,7 @@ double Simplex::max_infeasibility() const {
 }
 
 void Simplex::compute_reduced_costs(bool phase_one) {
+  if (factors_abandoned_) return;  // no factors to solve with (#208); d_ is as it was
   if (phase_one) {
     // Gradient of sum of bound violations with respect to each basic variable. Nonbasic
     // variables sit exactly on a bound and contribute nothing, so their phase-1 cost is 0.
@@ -1070,6 +1103,20 @@ double Simplex::minimization_objective() const {
 
 Solution Simplex::finish(SolveStatus status, const std::string& message, Count iterations,
                          double seconds) {
+  // The dual loop's time, by phase (#210), for whoever asks at verbose level.
+  double phase_total = 0.0;
+  for (const double t : dual_phase_seconds_) phase_total += t;
+  if (phase_total > 0.0) {
+    std::string breakdown;
+    for (std::size_t k = 0; k < dual_phase_seconds_.size(); ++k) {
+      if (!breakdown.empty()) breakdown += ", ";
+      breakdown +=
+          fmt::format("{} {:.2f}s ({:.0f}%)", kDualPhaseNames[k], dual_phase_seconds_[k],
+                      100.0 * dual_phase_seconds_[k] / phase_total);
+    }
+    logger_.verbose("dual simplex time by phase over {} iterations and {} refactorizations: {}",
+                    iterations, refactorizations_, breakdown);
+  }
   // EVERY EXIT, not just the optimal one. The perturbation relaxes bounds, so any point
   // reported while it is active belongs to a problem whose feasible region is slightly
   // larger than the caller's. The optimal path already restores them before returning - it
@@ -1139,10 +1186,10 @@ Solution Simplex::finish(SolveStatus status, const std::string& message, Count i
   // the point is written alongside it. The objective and the bound keep their unbounded
   // convention below: what is being reported is still "no finite optimum", not this point's
   // value.
-  const bool have_point = status == SolveStatus::kOptimal || status == SolveStatus::kFeasible ||
-                          status == SolveStatus::kIterationLimit ||
-                          status == SolveStatus::kTimeLimit ||
-                          status == SolveStatus::kUnbounded;
+  const bool have_point =
+      status == SolveStatus::kOptimal || status == SolveStatus::kFeasible ||
+      status == SolveStatus::kIterationLimit || status == SolveStatus::kTimeLimit ||
+      status == SolveStatus::kUnbounded || status == SolveStatus::kInterrupted;
   if (!have_point) {
     solution.recompute_quality(model_);
     solution.dual_bound = status == SolveStatus::kInfeasible ? kInfinity : -kInfinity;
@@ -1290,6 +1337,7 @@ std::optional<Solution> Simplex::prepare(const WarmStart* warm, const Timer& tim
   if (!warm_started_) set_initial_basis();
 
   if (!refactorize()) {
+    if (factors_abandoned_) return factorization_failed(0, timer);
     if (!warm_started_) {
       return finish(SolveStatus::kNumericalError, "the initial slack basis is singular", 0,
                     timer.elapsed_seconds());
@@ -1302,6 +1350,7 @@ std::optional<Solution> Simplex::prepare(const WarmStart* warm, const Timer& tim
     warm_started_ = false;
     set_initial_basis();
     if (!refactorize()) {
+      if (factors_abandoned_) return factorization_failed(0, timer);
       return finish(SolveStatus::kNumericalError, "the initial slack basis is singular", 0,
                     timer.elapsed_seconds());
     }
@@ -1312,6 +1361,8 @@ std::optional<Solution> Simplex::prepare(const WarmStart* warm, const Timer& tim
 
 Solution Simplex::run(const WarmStart* warm) {
   Timer timer;
+  time_limit_ = options_.get_double("time_limit");
+  arm_deadline(timer);
   if (std::optional<Solution> early = prepare(warm, timer)) return *early;
 
   logger_.info("Primal simplex: {} rows, {} columns, {} nonzeros{}", m_, n_,
@@ -1326,6 +1377,7 @@ Solution Simplex::primal_loop(Timer& timer, Count* iterations_io) {
   Count& iterations = *iterations_io;
   const double time_limit = time_limit_;
   const std::int64_t iteration_limit = iteration_limit_;
+  StopController stop(control_, timer, time_limit);
   int degenerate_run = 0;
   bool bland = false;
   bool was_phase_one = true;
@@ -1420,11 +1472,7 @@ Solution Simplex::primal_loop(Timer& timer, Count* iterations_io) {
       // it is about to report. It cannot loop: a refactorization empties the eta file, and
       // only a pivot refills it.
       if (m_ > 0 && lu_.eta_count() > 0) {
-        if (!refactorize()) {
-          return finish(SolveStatus::kNumericalError,
-                        fmt::format("basis became singular at iteration {}", iterations),
-                        iterations, timer.elapsed_seconds());
-        }
+        if (!refactorize()) return factorization_failed(iterations, timer);
         ++refactorizations_;
         compute_basic_values();
         logger_.verbose(
@@ -1463,11 +1511,7 @@ Solution Simplex::primal_loop(Timer& timer, Count* iterations_io) {
       const double residual = ftran_residual(entering);
       if (residual > kUpdateAccuracyTolerance) {
         ++accuracy_refactorizations_;
-        if (!refactorize()) {
-          return finish(SolveStatus::kNumericalError,
-                        fmt::format("basis became singular at iteration {}", iterations),
-                        iterations, timer.elapsed_seconds());
-        }
+        if (!refactorize()) return factorization_failed(iterations, timer);
         ++refactorizations_;
         ftran_entering_column(entering);
       }
@@ -1490,11 +1534,7 @@ Solution Simplex::primal_loop(Timer& timer, Count* iterations_io) {
     // is made. A claim that does not survive was the eta file talking, and the iteration
     // simply continues with the corrected alpha.
     if (ratio.unbounded && lu_.eta_count() > 0) {
-      if (!refactorize()) {
-        return finish(SolveStatus::kNumericalError,
-                      fmt::format("basis became singular at iteration {}", iterations),
-                      iterations, timer.elapsed_seconds());
-      }
+      if (!refactorize()) return factorization_failed(iterations, timer);
       ++refactorizations_;
       ftran_entering_column(entering);
       ratio = ratio_test(entering, direction, phase_one);
@@ -1670,11 +1710,7 @@ Solution Simplex::primal_loop(Timer& timer, Count* iterations_io) {
           eta_work_since_refactor_ >
           refactor_work_ratio_ * std::max(1.0, static_cast<double>(lu_.factor_nonzeros()));
       if (!updated || past_break_even || lu_.should_refactorize()) {
-        if (!refactorize()) {
-          return finish(SolveStatus::kNumericalError,
-                        fmt::format("basis became singular at iteration {}", iterations),
-                        iterations, timer.elapsed_seconds());
-        }
+        if (!refactorize()) return factorization_failed(iterations, timer);
         ++refactorizations_;
       }
       compute_basic_values();
@@ -1688,11 +1724,24 @@ Solution Simplex::primal_loop(Timer& timer, Count* iterations_io) {
                     fmt::format("iteration limit {} reached", iteration_limit), iterations,
                     timer.elapsed_seconds());
     }
-    const double elapsed = timer.elapsed_seconds();
-    if (elapsed > time_limit) {
+
+    SolveStatus stop_status;
+    if (stop.should_stop(
+            [&]() {
+              Progress p;
+              p.phase = phase_one ? Progress::Phase::kPresolve : Progress::Phase::kLp;
+              p.iterations = iterations;
+              p.objective = phase_one ? max_infeasibility() : minimization_objective();
+              p.best_bound = phase_one ? -kInfinity : minimization_objective();
+              return p;
+            },
+            &stop_status)) {
       compute_reduced_costs(false);
-      return finish(SolveStatus::kTimeLimit,
-                    fmt::format("time limit {:g}s reached", time_limit), iterations, elapsed);
+      return finish(stop_status,
+                    stop_status == SolveStatus::kTimeLimit
+                        ? fmt::format("time limit {:g}s reached", time_limit)
+                        : "interrupted",
+                    iterations, timer.elapsed_seconds());
     }
   }
 }
@@ -1704,7 +1753,8 @@ Solution Simplex::primal_loop(Timer& timer, Count* iterations_io) {
 /// available improvement; PDLP section 4.1 uses ten and reports the tail as negligible.
 constexpr int kRuizIterations = 10;
 
-Solution solve_primal_simplex(const Model& model, const Options& options, Logger& logger) {
+Solution solve_primal_simplex(const Model& model, const Options& options, Logger& logger,
+                              SolveControl* control) {
   // WHY THE SIMPLEX IS SCALED. It was assumed for a long time that it need not be - a
   // simplex pivots on ratios, so a uniform rescaling of a row cancels. That reasoning is
   // correct about the ALGEBRA and wrong about the ARITHMETIC, and the Netlib medium tier
@@ -1715,7 +1765,8 @@ Solution solve_primal_simplex(const Model& model, const Options& options, Logger
   //
   // Markowitz threshold pivoting (issue #22) helped, but it only chooses among the pivots
   // available; scaling changes which pivots exist at all. See issue #49.
-  return solve_primal_simplex(model, options, logger, build_node_scaling(model, options));
+  return solve_primal_simplex(model, options, logger, build_node_scaling(model, options),
+                              control);
 }
 
 NodeScaling build_node_scaling(const Model& model, const Options& options) {
@@ -1730,29 +1781,33 @@ NodeScaling build_node_scaling(const Model& model, const Options& options) {
 }
 
 Solution solve_primal_simplex(const Model& model, const Options& options, Logger& logger,
-                              const NodeScaling& cache) {
+                              const NodeScaling& cache, SolveControl* control) {
   return detail::solve_with_scaling(model, options, logger, cache, detail::Engine::kPrimal,
-                                    nullptr);
+                                    nullptr, control);
 }
 
 Solution solve_dual_simplex(const Model& model, const Options& options, Logger& logger,
+                            SolveControl* control, const WarmStart* warm) {
+  return solve_dual_simplex(model, options, logger, build_node_scaling(model, options), control,
+                            warm);
+}
+
+Solution solve_dual_simplex(const Model& model, const Options& options, Logger& logger,
+                            const NodeScaling& cache, SolveControl* control,
                             const WarmStart* warm) {
-  return solve_dual_simplex(model, options, logger, build_node_scaling(model, options), warm);
-}
-
-Solution solve_dual_simplex(const Model& model, const Options& options, Logger& logger,
-                            const NodeScaling& cache, const WarmStart* warm) {
-  return detail::solve_with_scaling(model, options, logger, cache, detail::Engine::kDual, warm);
+  return detail::solve_with_scaling(model, options, logger, cache, detail::Engine::kDual, warm,
+                                    control);
 }
 
 namespace detail {
 
 Solution solve_with_scaling(const Model& model, const Options& options, Logger& logger,
-                            const NodeScaling& cache, Engine engine, const WarmStart* warm) {
+                            const NodeScaling& cache, Engine engine, const WarmStart* warm,
+                            SolveControl* control) {
   // One place chooses the loop, so the scaled attempt and the unscaled retry below cannot
   // disagree about which method they are running.
   const auto run_engine = [&](const Model& problem, const Options& problem_options) {
-    Simplex simplex(problem, problem_options, logger);
+    Simplex simplex(problem, problem_options, logger, control);
     return engine == Engine::kDual ? simplex.run_dual(warm) : simplex.run(warm);
   };
   if (!cache.valid) return run_engine(model, options);
@@ -1774,7 +1829,7 @@ Solution solve_with_scaling(const Model& model, const Options& options, Logger& 
         cache.scaling.row.size(), cache.scaling.column.size(), model.num_rows(),
         model.num_cols());
     return solve_with_scaling(model, options, logger, build_node_scaling(model, options),
-                              engine, warm);
+                              engine, warm, control);
   }
 
   const Scaling& scaling = cache.scaling;

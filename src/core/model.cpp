@@ -29,6 +29,7 @@ const char* to_string(SolveStatus status) noexcept {
     case SolveStatus::kNodeLimit: return "node_limit";
     case SolveStatus::kNumericalError: return "numerical_error";
     case SolveStatus::kModelError: return "model_error";
+    case SolveStatus::kInterrupted: return "interrupted";
   }
   return "unknown";
 }

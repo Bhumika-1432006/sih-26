@@ -18,6 +18,7 @@ namespace sankhya::qp {
 /// iteration happens to reach. Convexity is decided before any arithmetic starts; see
 /// src/qp/convexity.hpp.
 [[nodiscard]] Solution solve_convex_qp(const Model& model, const Options& options,
-                                       Logger& logger);
+                                       Logger& logger,
+                                       sankhya::SolveControl* control = nullptr);
 
 }  // namespace sankhya::qp

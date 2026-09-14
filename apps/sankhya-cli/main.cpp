@@ -9,7 +9,9 @@
 // bench/ branch on it, and a script that has to grep stdout to find out whether the solve
 // succeeded will eventually mis-parse and quietly record a wrong result.
 
+#include <atomic>
 #include <cmath>
+#include <csignal>
 #include <cstdio>
 #include <string>
 #include <vector>
@@ -21,9 +23,16 @@
 #include "sankhya/logging.hpp"
 #include "sankhya/model.hpp"
 #include "sankhya/options.hpp"
+#include "sankhya/solve_control.hpp"
 #include "sankhya/version.hpp"
 
 namespace {
+
+volatile std::sig_atomic_t g_cli_interrupt = 0;
+
+extern "C" void handle_sigint(int) {
+  g_cli_interrupt = 1;
+}
 
 /// Apply repeated --option name=value pairs. Returns false after printing the first error.
 bool apply_options(const std::vector<std::string>& assignments, sankhya::Options* options) {
@@ -252,10 +261,20 @@ int main(int argc, char** argv) {
     if (!load_model(model_path, options, &model)) return 3;
     if (!progress_out_path.empty()) options.set_string("progress_out", progress_out_path);
 
-    const sankhya::Solution solution = sankhya::solve(model, options);
+    g_cli_interrupt = 0;
+    std::signal(SIGINT, handle_sigint);
+
+    sankhya::SolveControl control;
+    control.progress_callback = [](const sankhya::Progress&) {
+      return g_cli_interrupt ? 1 : 0;
+    };
+
+    const sankhya::Solution solution = sankhya::solve(model, options, &control);
+
+    std::signal(SIGINT, SIG_DFL);
 
     fmt::print("\n{:<22}{}\n", "status", sankhya::to_string(solution.status));
-    if (solution.has_primal_values()) {
+    if (sankhya::claims_a_point(solution)) {
       fmt::print("{:<22}{:.12g}\n", "objective", solution.objective);
       fmt::print("{:<22}{:.12g}\n", "dual bound", solution.dual_bound);
     }
@@ -318,6 +337,40 @@ int main(int argc, char** argv) {
         fmt::print("  {:<30} {:>14.6g} {:>14.6g}\n", name, solution.row_ranging_lower[ii],
                    solution.row_ranging_upper[ii]);
       }
+    }
+
+    // IIS message: "infeasible; the smallest set of constraints that cannot hold together
+    // is ..." - the industrial diagnosis a planner reads first (#217).
+    if (!solution.iis_rows.empty() || !solution.iis_col_lo.empty() ||
+        !solution.iis_col_hi.empty()) {
+      std::string iis_msg;
+      const auto row_nm = [&](sankhya::Index i) -> std::string {
+        const auto u = static_cast<std::size_t>(i);
+        return (u < model.row_names.size() && !model.row_names[u].empty())
+                   ? model.row_names[u]
+                   : fmt::format("R{}", i);
+      };
+      const auto col_nm = [&](sankhya::Index j) -> std::string {
+        const auto u = static_cast<std::size_t>(j);
+        return (u < model.col_names.size() && !model.col_names[u].empty())
+                   ? model.col_names[u]
+                   : fmt::format("C{}", j);
+      };
+      for (const sankhya::Index i : solution.iis_rows) {
+        if (!iis_msg.empty()) iis_msg += ", ";
+        iis_msg += row_nm(i);
+      }
+      for (const sankhya::Index j : solution.iis_col_lo) {
+        if (!iis_msg.empty()) iis_msg += ", ";
+        iis_msg += fmt::format("lower bound on {}", col_nm(j));
+      }
+      for (const sankhya::Index j : solution.iis_col_hi) {
+        if (!iis_msg.empty()) iis_msg += ", ";
+        iis_msg += fmt::format("upper bound on {}", col_nm(j));
+      }
+      fmt::print("{:<22}{}\n", "IIS",
+                 fmt::format("the smallest set of constraints that cannot hold together is: {}",
+                             iis_msg));
     }
 
     std::string error;
