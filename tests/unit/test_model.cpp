@@ -203,7 +203,7 @@ TEST(Solution, AllocateForSizesEveryVector) {
   EXPECT_EQ(solution.row_dual.size(), 2u);
   EXPECT_EQ(solution.row_status.size(), 2u);
   EXPECT_EQ(solution.status, SolveStatus::kNotSolved);
-  EXPECT_FALSE(solution.has_primal_values());
+  EXPECT_FALSE(claims_a_point(solution));
 }
 
 TEST(Solution, RecomputeQualityFindsAFeasiblePoint) {
@@ -299,7 +299,7 @@ TEST(Solve, DispatchesAnLpToTheSimplex) {
   const Solution solution = solve(model, options);
   EXPECT_EQ(solution.status, SolveStatus::kOptimal) << solution.message;
   EXPECT_EQ(solution.algorithm.rfind("simplex-", 0), 0u) << solution.algorithm;
-  EXPECT_TRUE(solution.has_primal_values());
+  EXPECT_TRUE(claims_a_point(solution));
   EXPECT_LE(solution.primal_infeasibility, tol::kPrimalFeasibility);
 }
 

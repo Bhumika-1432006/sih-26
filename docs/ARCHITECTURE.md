@@ -59,8 +59,8 @@ That seam is what makes a new engine a bounded piece of work: it has to produce 
 | `src/ipm/` | Mehrotra predictor-corrector interior-point method on the normal equations, over the sparse LDLᵀ in `src/la/ldl.cpp`; no basis | core, la | 0.5k |
 | `src/qp/` | convexity check (Cholesky of the Hessian), Condat–Vũ first-order convex QP | core, la | 0.5k |
 | `src/mip/` | branch and bound: propagation, root diving, reliability branching with strong branching, warm-started dual node LPs, MIQP nodes through the QP engine; root cuts are PR #159 | core, simplex, qp | 1.3k |
-| `src/api/` | the C API over `solve()`; the Python bindings (`bindings/python/`) wrap this, not the C++ | core | 0.5k |
-| `apps/sankhya-cli/` | `sankhya solve|info|options|version`, `--stats`, `--write-sol`, `--option k=v` | api, io | – |
+| `src/api/` | the C API over `solve()` (including `sankhya_set_callback` and `sankhya_model_interrupt`); the Python bindings (`bindings/python/`, including `Model.interrupt()`) wrap this, not the C++ | core | 0.5k |
+| `apps/sankhya-cli/` | `sankhya solve|info|options|version`, `--stats`, `--write-sol`, `--option k=v`. Uses `sankhya_set_callback` for graceful SIGINT interrupted exit | api, io | – |
 | `tools/` | `verify_solution.py`: re-parses the model with its own reader and checks the `.sol` file's primal feasibility, reduced costs, dual feasibility, complementary slackness and strong duality. Shares no code with the solver, deliberately | – | 1.5k |
 | `tests/` | unit tests per module; `oracles/` — a rational-arithmetic simplex and exact MILP branch and bound that the float engines are fuzzed against; `robustness/` — the sweeps that find where the solver stops working | – | 10k |
 | `bench/runners/` | Netlib, MIPLIB and Mittelmann runners and fetchers, the HiGHS comparison (a separate process over the same files), the robustness sweep, `make_benchmarks_doc.py` which generates `docs/BENCHMARKS.md` from the CSVs | – | 4k |

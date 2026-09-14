@@ -467,7 +467,7 @@ TEST(SolveStatusGuard, PrimalFeasibleButDualInfeasibleIsFeasibleNotOptimal) {
   reconcile_status_with_measurement(&solution, options, silent, /*check_dual=*/true);
 
   EXPECT_EQ(solution.status, SolveStatus::kFeasible);
-  EXPECT_TRUE(solution.has_primal_values());
+  EXPECT_TRUE(claims_a_point(solution));
   EXPECT_NE(solution.message.find("dual feasibility"), std::string::npos) << solution.message;
 }
 

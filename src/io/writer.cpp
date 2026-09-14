@@ -176,7 +176,7 @@ bool write_solution(const std::string& path, const Model& model, const Solution&
   // second list to forget. What is written instead is the proof, when the engine had one.
   // An UNBOUNDED claim keeps its columns block, because its ray starts from a feasible point
   // and both halves are needed to check it.
-  if (!claims_a_point(solution.status)) {
+  if (!claims_a_point(solution)) {
     if (!solution.farkas_dual.empty()) {
       fmt::print(out,
                  "\n# Farkas certificate: one multiplier per row. Aggregating the rows\n"

@@ -200,6 +200,8 @@ does not yet honour it the same way (#208).
 runs, flushed immediately - an operator can `tail -f` it during a long solve to watch the
 bound close in on the answer without waiting for the final report.
 
+The solver supports graceful interruption. Pressing Ctrl-C (`SIGINT`) in the CLI stops the solve at the next safe point and returns the best found point as an `interrupted` result. The Python bindings expose `Model.interrupt()` and support progress callbacks; returning a non-zero value from a Python callback (or via `sankhya_set_callback` in C) interrupts the solve gracefully.
+
 ## Demo
 
 ```bash

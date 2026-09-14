@@ -55,6 +55,7 @@
 
 #include <fmt/format.h>
 
+#include "../core/stop_controller.hpp"
 #include "sankhya/timer.hpp"
 #include "sankhya/tolerances.hpp"
 
@@ -447,6 +448,8 @@ std::optional<Solution> Simplex::dual_loop(Timer& timer, Count* iterations_io) {
     return true;
   };
 
+  StopController stop(control_, timer, time_limit_);
+
   for (;;) {
     iterations_seen_ = iterations;
     if (iterations % 20 == 0) {
@@ -597,10 +600,22 @@ std::optional<Solution> Simplex::dual_loop(Timer& timer, Count* iterations_io) {
         return stop_at_limit(SolveStatus::kIterationLimit,
                              fmt::format("iteration limit {} reached", iteration_limit_));
       }
-      const double elapsed = timer.elapsed_seconds();
-      if (elapsed > time_limit_) {
-        return stop_at_limit(SolveStatus::kTimeLimit,
-                             fmt::format("time limit {:g}s reached", time_limit_));
+
+      SolveStatus stop_status;
+      if (stop.should_stop(
+              [&]() {
+                Progress p;
+                p.phase = Progress::Phase::kLp;
+                p.iterations = iterations;
+                p.objective = kInfinity;  // not valid during dual loop
+                p.best_bound = minimization_objective();
+                return p;
+              },
+              &stop_status)) {
+        return stop_at_limit(stop_status,
+                             stop_status == SolveStatus::kTimeLimit
+                                 ? fmt::format("time limit {:g}s reached", time_limit_)
+                                 : "interrupted");
       }
       return std::nullopt;
     };

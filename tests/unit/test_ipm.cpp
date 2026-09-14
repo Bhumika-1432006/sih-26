@@ -14,6 +14,7 @@
 #include "sankhya/ipm.hpp"
 #include "sankhya/model.hpp"
 #include "sankhya/options.hpp"
+#include "sankhya/solve_control.hpp"
 #include "sankhya/tolerances.hpp"
 
 #include "oracles/lp_generator.hpp"
@@ -236,6 +237,23 @@ TEST(InteriorPoint, AWarmStartOfTheWrongLengthIsIgnoredAndTheSolveIsCold) {
   const Solution solved = ipm::solve_ipm(model, options, quiet, &wrong);
   ASSERT_EQ(solved.status, SolveStatus::kOptimal) << solved.message;
   EXPECT_NEAR(solved.objective, 36.0, 1e-6);
+}
+
+TEST(InteriorPoint, RespectsSolveControlInterruption) {
+  const Model model = make_lp(
+      {{1.0, 0.0}, {0.0, 2.0}, {3.0, 2.0}}, {-kInfinity, -kInfinity, -kInfinity},
+      {4.0, 12.0, 18.0}, {3.0, 5.0}, {0.0, 0.0}, {kInfinity, kInfinity}, ObjSense::kMaximize);
+  Options options = with_algorithm("ipm");
+  Logger quiet(stdout, LogLevel::kOff);
+
+  sankhya::SolveControl control;
+  control.interrupt();  // Interrupt before starting
+
+  const Solution solved = ipm::solve_ipm(model, options, quiet, &control);
+  EXPECT_EQ(solved.status, SolveStatus::kInterrupted) << solved.message;
+  // IPM returns the starting/best-available point even when interrupted before the first
+  // iteration, matching the kTimeLimit contract (#223).
+  EXPECT_TRUE(claims_a_point(solved));
 }
 
 }  // namespace
