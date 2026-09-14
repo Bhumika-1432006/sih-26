@@ -21,6 +21,7 @@
 #include "core/status_guard.hpp"
 #include "presolve/presolve.hpp"
 #include "sankhya/certificate.hpp"
+#include "sankhya/io.hpp"
 #include "sankhya/ipm.hpp"
 #include "sankhya/logging.hpp"
 #include "sankhya/mip.hpp"
@@ -411,10 +412,25 @@ Solution solve(const Model& model, const Options& options) {
                     solution.solve_seconds);
         return solution;
       }
+      // Dump the presolved model when --option write_presolved=<path> is set.
+      const std::string presolved_path = options.get_string("write_presolved");
+      if (!presolved_path.empty()) {
+        std::string write_error;
+        if (!io::write_model(presolved_path, reduced.model, &write_error)) {
+          logger.warning("write_presolved: {}", write_error);
+        } else {
+          logger.info("Presolved model written to {}", presolved_path);
+        }
+      }
       Solution inner = run_lp_engine(reduced.model);
       solution = presolve::postsolve(reduced, model, inner);
       solution.solve_seconds = timer.elapsed_seconds();
     } else {
+      if (!options.get_string("write_presolved").empty()) {
+        logger.warning(
+            "write_presolved: presolve is off, so there is no presolved model to write; "
+            "nothing was written");
+      }
       solution = run_lp_engine(model);
     }
     reconcile_status_with_measurement(&solution, options, logger, /*check_dual=*/true);

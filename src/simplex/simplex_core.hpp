@@ -13,6 +13,7 @@
 #include "primal_simplex.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <limits>
@@ -207,6 +208,17 @@ class Simplex {
   /// The primal iteration loop. `iterations` counts on from what the caller has already
   /// spent, so a dual-then-primal solve reports one total.
   Solution primal_loop(Timer& timer, Count* iterations);
+
+  // ---- the deadline inside the factorization (#208) ------------------------------------
+  /// Point deadline_ at `timer`, so every refactorization from here on can be abandoned
+  /// when the time limit passes. `timer` must outlive the solve it clocks; run() and
+  /// run_dual() own theirs for exactly that long.
+  void arm_deadline(const Timer& timer);
+  /// What a failed refactorization means: a time limit, when the deadline fired inside the
+  /// factorization and the factors were abandoned (the point in hand is reported, its
+  /// reduced costs as last computed, because the factors that would refresh them do not
+  /// exist), or a singular basis otherwise.
+  [[nodiscard]] Solution factorization_failed(Count iterations, const Timer& timer);
 
   // ---- dual simplex (dual_simplex.cpp) ---------------------------------------------------
   /// The dual iteration loop. Empty when the basis must be handed to primal_loop(): the
@@ -422,6 +434,18 @@ class Simplex {
   /// Effort counters for the solve log. rejected_updates_ is the interesting one: a basis
   /// that keeps producing unsafe pivots is badly conditioned, and that is worth seeing.
   Count refactorizations_ = 0;
+  /// WHERE A DUAL ITERATION'S TIME GOES (#210). Seconds accumulated per phase over the dual
+  /// loop and reported at verbose level by finish(): the scale tables showed the iteration
+  /// rate falling 38x for a 5x larger model, and the only honest way to say why is to
+  /// measure each phase. Index order: pricing, pivot row (BTRAN + row), ratio test, FTRAN,
+  /// basis update, refactorization, basic values (FTRAN), reduced costs (BTRAN + pass).
+  std::array<double, 8> dual_phase_seconds_{};
+  /// Right-hand side for the one FTRAN that carries a set of bound flips into the basic
+  /// values (#210); kept as a member so a flip iteration allocates nothing.
+  std::vector<double> flip_rhs_;
+  static constexpr const char* kDualPhaseNames[8] = {
+      "pricing", "pivot row",   "ratio test",   "ftran",
+      "update",  "refactorize", "basic values", "reduced costs"};
   double worst_basis_pivot_ = 0.0;  ///< smallest pivot over every factorization
   Count iterations_seen_ = 0;       ///< for the per-refactorization log line only
   Count rejected_updates_ = 0;
@@ -504,6 +528,11 @@ class Simplex {
   double primal_tolerance_ = tol::kPrimalFeasibility;
   double dual_tolerance_ = tol::kDualFeasibility;
   double time_limit_ = std::numeric_limits<double>::infinity();
+  /// Handed to every basis factorization (#208). Empty when there is no time limit.
+  SparseLu::ShouldStop deadline_;
+  /// Set when a refactorization was abandoned on the deadline: the LU is not usable, and
+  /// compute_basic_values() / compute_reduced_costs() leave their vectors as they were.
+  bool factors_abandoned_ = false;
   std::int64_t iteration_limit_ = -1;
   bool warm_started_ = false;
   std::string algorithm_name_ = "simplex-primal";  ///< what finish() reports
