@@ -16,6 +16,7 @@
 
 #include <fmt/format.h>
 
+#include "sankhya/certificate.hpp"
 #include "sankhya/model.hpp"
 #include "sankhya/options.hpp"
 #include "sankhya/sparse.hpp"
@@ -129,6 +130,15 @@ void compute_iis(const Model& model, Solution* solution, const Options& options,
   // Inconclusive statuses (time limit, numerical error) are treated conservatively: the
   // candidate is kept (not dropped), and a warning is emitted so the caller knows the
   // result may not be fully irreducible.
+  // THE PROOF OF NECESSITY IS THE TRIAL ITSELF. A trial that comes back feasible hands over
+  // a point that satisfies the working system minus the candidate, and the final IIS is a
+  // subset of the working system, so that point satisfies every IIS element but the one
+  // removed. Kept per candidate and written as witnesses, it lets the verifier check
+  // irreducibility with arithmetic alone (#217, third acceptance box).
+  std::vector<std::vector<double>> row_witness(static_cast<std::size_t>(m));
+  std::vector<std::vector<double>> lo_witness(static_cast<std::size_t>(n));
+  std::vector<std::vector<double>> hi_witness(static_cast<std::size_t>(n));
+
   bool inconclusive = false;
   const auto is_redundant = [&](const Solution& trial, const char* kind,
                                 std::size_t idx) -> bool {
@@ -160,6 +170,7 @@ void compute_iis(const Model& model, Solution* solution, const Options& options,
     } else {
       sub.row_lower[u] = saved_lo;
       sub.row_upper[u] = saved_hi;
+      if (claims_a_point(trial.status)) row_witness[u] = trial.col_value;
     }
   }
 
@@ -176,6 +187,7 @@ void compute_iis(const Model& model, Solution* solution, const Options& options,
       col_lo_in[u] = false;
     } else {
       sub.col_lower[u] = saved_lo;
+      if (claims_a_point(trial.status)) lo_witness[u] = trial.col_value;
     }
   }
 
@@ -192,10 +204,36 @@ void compute_iis(const Model& model, Solution* solution, const Options& options,
       col_hi_in[u] = false;
     } else {
       sub.col_upper[u] = saved_hi;
+      if (claims_a_point(trial.status)) hi_witness[u] = trial.col_value;
     }
   }
 
-  // --- Step 4: collect and report --------------------------------------------------------
+  // --- Step 4: the certificate of the IIS itself ------------------------------------------
+  //
+  // `sub` is now exactly the IIS: every other row and bound is free. One more solve hands
+  // back a Farkas vector whose support lies inside the IIS, and that vector - re-proved
+  // against the caller's model, as every certificate is - replaces the full model's, so
+  // the checker's existing Farkas test proves the subsystem infeasible on its own. The
+  // relaxed rows carry zero multipliers and the relaxed bounds are infinite, so a vector
+  // that proves `sub` infeasible proves the tighter original infeasible too; the re-proof
+  // is the check on that reasoning, not a substitute for it.
+  {
+    const Solution final_trial = solve(sub, sub_opts);
+    std::string why;
+    if (final_trial.status == SolveStatus::kInfeasible &&
+        final_trial.farkas_dual.size() == static_cast<std::size_t>(m) &&
+        farkas_proves_infeasible(model, final_trial.farkas_dual, &why)) {
+      solution->farkas_dual = final_trial.farkas_dual;
+    } else {
+      logger.warning(
+          "IIS: the final subsystem's certificate could not be established ({}); the "
+          "certificate written is the full model's, whose support may reach outside the IIS",
+          final_trial.status == SolveStatus::kInfeasible ? why : to_string(final_trial.status));
+      inconclusive = true;
+    }
+  }
+
+  // --- Step 5: collect and report --------------------------------------------------------
 
   for (Index i = 0; i < m; ++i) {
     if (row_in[static_cast<std::size_t>(i)]) solution->iis_rows.push_back(i);
@@ -205,6 +243,28 @@ void compute_iis(const Model& model, Solution* solution, const Options& options,
     if (col_lo_in[u]) solution->iis_col_lo.push_back(j);
     if (col_hi_in[u]) solution->iis_col_hi.push_back(j);
   }
+  // Witnesses in the same order as the elements; an element that kept its place on an
+  // inconclusive trial has none, and then none are claimed at all.
+  std::vector<std::vector<double>> witnesses;
+  bool every_witness = true;
+  for (const Index i : solution->iis_rows) {
+    auto& w = row_witness[static_cast<std::size_t>(i)];
+    if (w.size() != static_cast<std::size_t>(n)) every_witness = false;
+    witnesses.push_back(std::move(w));
+  }
+  for (const Index j : solution->iis_col_lo) {
+    auto& w = lo_witness[static_cast<std::size_t>(j)];
+    if (w.size() != static_cast<std::size_t>(n)) every_witness = false;
+    witnesses.push_back(std::move(w));
+  }
+  for (const Index j : solution->iis_col_hi) {
+    auto& w = hi_witness[static_cast<std::size_t>(j)];
+    if (w.size() != static_cast<std::size_t>(n)) every_witness = false;
+    witnesses.push_back(std::move(w));
+  }
+  if (!every_witness) inconclusive = true;
+  if (!inconclusive) solution->iis_witnesses = std::move(witnesses);
+  solution->iis_inconclusive = inconclusive;
 
   logger.info("IIS: {} row(s), {} lower bound(s), {} upper bound(s) are irreducible",
               solution->iis_rows.size(), solution->iis_col_lo.size(),

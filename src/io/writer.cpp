@@ -147,6 +147,13 @@ bool write_solution(const std::string& path, const Model& model, const Solution&
              !solution.farkas_dual.empty()  ? "farkas"
              : !solution.primal_ray.empty() ? "ray"
                                             : "none");
+  if (!solution.iis_rows.empty() || !solution.iis_col_lo.empty() ||
+      !solution.iis_col_hi.empty()) {
+    // Whether the IIS section below claims both defining properties: infeasible on its own
+    // (the farkas section is then its certificate) and irreducible (one witness per
+    // element follows it). `not-claimed` when a trial solve was inconclusive.
+    fmt::print(out, "iis_irreducible {}\n", solution.iis_inconclusive ? "not-claimed" : "yes");
+  }
   fmt::print(out, "rows {}\n", m);
   fmt::print(out, "columns {}\n", n);
   fmt::print(out, "iterations {}\n", solution.iterations);
@@ -207,6 +214,51 @@ bool write_solution(const std::string& path, const Model& model, const Solution&
         fmt::print(out, "col_hi {}\n", quoted_name(column_name(model, j)));
       }
       fmt::print(out, "end iis\n");
+
+      // WITNESSES (#217): one point per element, satisfying every other element of the IIS
+      // and violating its own, so the checker can confirm irreducibility by arithmetic. Only
+      // the columns the IIS touches are written - the others enter no IIS row and carry no
+      // IIS bound, so the checker treats them as zero without loss.
+      if (!solution.iis_witnesses.empty()) {
+        std::vector<char> touched(static_cast<std::size_t>(n), 0);
+        std::vector<char> iis_row(static_cast<std::size_t>(m), 0);
+        for (const Index i : solution.iis_rows) iis_row[static_cast<std::size_t>(i)] = 1;
+        for (Index j = 0; j < n; ++j) {
+          const ColumnView column = model.matrix.column(j);
+          for (Index k = 0; k < column.size; ++k) {
+            if (iis_row[static_cast<std::size_t>(column.rows[k])] != 0) {
+              touched[static_cast<std::size_t>(j)] = 1;
+              break;
+            }
+          }
+        }
+        for (const Index j : solution.iis_col_lo) touched[static_cast<std::size_t>(j)] = 1;
+        for (const Index j : solution.iis_col_hi) touched[static_cast<std::size_t>(j)] = 1;
+        Index touched_count = 0;
+        for (const char t : touched) touched_count += t;
+
+        std::size_t w = 0;
+        const auto write_witness = [&](const char* kind, const std::string& name) {
+          if (w >= solution.iis_witnesses.size()) return;
+          const std::vector<double>& point = solution.iis_witnesses[w++];
+          fmt::print(out, "begin iis_witness {} {} {}\n", kind, quoted_name(name),
+                     touched_count);
+          for (Index j = 0; j < n; ++j) {
+            if (touched[static_cast<std::size_t>(j)] == 0) continue;
+            fmt::print(out, "{} {}\n", quoted_name(column_name(model, j)),
+                       exact(value_or(point, j)));
+          }
+          fmt::print(out, "end iis_witness\n");
+        };
+        fmt::print(out,
+                   "\n# One witness per IIS element: a point that satisfies every other\n"
+                   "# element and violates the named one, which is what irreducible means.\n");
+        for (const Index i : solution.iis_rows) write_witness("row", row_name(model, i));
+        for (const Index j : solution.iis_col_lo)
+          write_witness("col_lo", column_name(model, j));
+        for (const Index j : solution.iis_col_hi)
+          write_witness("col_hi", column_name(model, j));
+      }
     }
 
     const bool closed = std::fclose(out) == 0;

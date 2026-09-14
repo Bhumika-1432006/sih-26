@@ -103,6 +103,57 @@ TEST(IIS, SimpleConflict) {
 }
 
 // =========================================================================================
+// IIS::TheCertificateAndTheWitnessesProveBothProperties
+//
+// What the .sol file will carry, checked here in the solver's own terms (#217, third
+// acceptance box): the Farkas vector's support lies inside the IIS, and every element has a
+// witness point that satisfies all the other elements and violates its own.
+// =========================================================================================
+
+TEST(IIS, TheCertificateAndTheWitnessesProveBothProperties) {
+  // The conflict is x >= 3 against x <= 2, buried under a column bound the certificate may
+  // touch (x <= 10 is slack) and two irrelevant rows.
+  Model model =
+      make_lp({{1, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, {3.0, -kInfinity, 1.0, -kInfinity},
+              {kInfinity, 2.0, kInfinity, 10.0}, {0.0, 0.0, 0.0}, {10.0, kInfinity, kInfinity});
+  const Solution sol = solve(model, silent_options());
+  ASSERT_EQ(sol.status, SolveStatus::kInfeasible) << sol.message;
+  ASSERT_EQ(sol.iis_rows.size(), 2u);
+  ASSERT_FALSE(sol.iis_inconclusive);
+
+  // 1. The certificate is the subsystem's: nonzero multipliers only on IIS rows.
+  ASSERT_EQ(sol.farkas_dual.size(), 4u);
+  for (Index i = 0; i < 4; ++i) {
+    const bool in_iis =
+        std::find(sol.iis_rows.begin(), sol.iis_rows.end(), i) != sol.iis_rows.end();
+    if (!in_iis) {
+      EXPECT_EQ(sol.farkas_dual[static_cast<std::size_t>(i)], 0.0) << "row " << i;
+    }
+  }
+  EXPECT_TRUE(sol.farkas_dual[0] != 0.0 && sol.farkas_dual[1] != 0.0);
+
+  // 2. One witness per element; each satisfies the other IIS rows and violates its own.
+  const std::size_t elements =
+      sol.iis_rows.size() + sol.iis_col_lo.size() + sol.iis_col_hi.size();
+  ASSERT_EQ(sol.iis_witnesses.size(), elements);
+  for (std::size_t w = 0; w < sol.iis_rows.size(); ++w) {
+    const std::vector<double>& x = sol.iis_witnesses[w];
+    ASSERT_EQ(x.size(), 3u);
+    for (std::size_t v = 0; v < sol.iis_rows.size(); ++v) {
+      const auto row = static_cast<std::size_t>(sol.iis_rows[v]);
+      const double activity = x[0];  // both IIS rows are x alone
+      const bool inside =
+          activity >= model.row_lower[row] - 1e-7 && activity <= model.row_upper[row] + 1e-7;
+      if (v == w) {
+        EXPECT_FALSE(inside) << "witness " << w << " must violate its own row";
+      } else {
+        EXPECT_TRUE(inside) << "witness " << w << " must satisfy row " << row;
+      }
+    }
+  }
+}
+
+// =========================================================================================
 // IIS::RedundantRowExcluded
 //
 // Conflict: x >= 3 and x <= 2. Plus a redundant row x <= 1 (tighter than R1).
