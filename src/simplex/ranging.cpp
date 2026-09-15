@@ -55,9 +55,9 @@ void compute_ranging(const Model& model, const Options& options, Logger& logger,
                      Solution& solution) {
   if (!options.get_bool("ranging")) return;
   if (solution.status != SolveStatus::kOptimal) {
-    logger.warning("ranging: skipped, the status is {} and ranges are defined at an optimal "
-                   "basis only",
-                   to_string(solution.status));
+    logger.warning(
+        "ranging: skipped, the status is {} and ranges are defined at an optimal basis only",
+        to_string(solution.status));
     return;
   }
   if (solution.col_status.empty() || solution.row_status.empty()) {

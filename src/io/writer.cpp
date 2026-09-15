@@ -304,9 +304,9 @@ bool write_solution(const std::string& path, const Model& model, const Solution&
     }
     fmt::print(out, "end ranging_columns\n");
     fmt::print(out,
-               "\n# How far each row's active bound may fall and rise before the basis becomes\n"
-               "# infeasible; for a row that is not binding, how far its upper bound may fall\n"
-               "# and its lower bound rise before it binds.\n"
+               "\n# How far each row's active bound may fall and rise before the basis\n"
+               "# becomes infeasible; for a row that is not binding, how far its upper\n"
+               "# bound may fall and its lower bound rise before it binds.\n"
                "# name allow_decrease allow_increase\n");
     fmt::print(out, "begin ranging_rows {}\n", m);
     for (Index i = 0; i < m; ++i) {
