@@ -288,8 +288,11 @@ int main(int argc, char** argv) {
     if (!solution.col_ranging_lower.empty()) {
       // Print the ten most sensitive objective coefficients and row bounds.
       const int kTop = 10;
-      fmt::print("\nTop {} most sensitive objective ranges:\n", kTop);
-      fmt::print("  {:<30} {:>14} {:>14}\n", "column", "obj_lo", "obj_hi");
+      fmt::print("\nTop {} most sensitive objective coefficients{}:\n", kTop,
+                 solution.ranging_basis_degenerate
+                     ? " (the basis is degenerate: these are its ranges, not the optimum's)"
+                     : "");
+      fmt::print("  {:<30} {:>14} {:>14}\n", "column", "allow_decrease", "allow_increase");
       struct ColRangeRow {
         double sensitivity;
         sankhya::Index j;
@@ -313,8 +316,8 @@ int main(int argc, char** argv) {
         fmt::print("  {:<30} {:>14.6g} {:>14.6g}\n", name, solution.col_ranging_lower[jj],
                    solution.col_ranging_upper[jj]);
       }
-      fmt::print("\nTop {} most sensitive RHS ranges:\n", kTop);
-      fmt::print("  {:<30} {:>14} {:>14}\n", "row", "rhs_lo", "rhs_hi");
+      fmt::print("\nTop {} most sensitive row bounds:\n", kTop);
+      fmt::print("  {:<30} {:>14} {:>14}\n", "row", "allow_decrease", "allow_increase");
       struct RowRangeRow {
         double sensitivity;
         sankhya::Index i;

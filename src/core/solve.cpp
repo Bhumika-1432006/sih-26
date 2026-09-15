@@ -441,7 +441,7 @@ Solution solve(const Model& model, const Options& options, SolveControl* control
     keep_only_a_proved_certificate(&solution, model, logger);
     // Sensitivity ranging runs on the ORIGINAL model after postsolve so the vectors are
     // full-size and the basis is expressed in terms of original column and row indices.
-    detail::compute_ranging(model, options, solution);
+    detail::compute_ranging(model, options, logger, solution);
     compute_iis(model, &solution, options, logger);
     logger.info("Result: {}  objective {:.10g}  {} iterations  {:.3f}s",
                 to_string(solution.status), solution.objective, solution.iterations,

@@ -133,7 +133,7 @@ TEST(Ranging, CostPerturbInsideRange_SameBasis) {
     // Decrease by pert_lo.
     if (pert_lo > 1e-9) {
       Model m2 = base;
-      m2.col_cost[jj] += pert_lo;
+      m2.col_cost[jj] -= pert_lo;
       const Solution s2 = solve(m2, opts);
       ASSERT_EQ(s2.status, SolveStatus::kOptimal)
           << "column " << j << " decrease inside range: not optimal";
@@ -146,7 +146,7 @@ TEST(Ranging, CostPerturbInsideRange_SameBasis) {
     // Increase by pert_hi.
     if (pert_hi > 1e-9) {
       Model m2 = base;
-      m2.col_cost[jj] -= pert_hi;
+      m2.col_cost[jj] += pert_hi;
       const Solution s2 = solve(m2, opts);
       ASSERT_EQ(s2.status, SolveStatus::kOptimal)
           << "column " << j << " increase inside range: not optimal";
@@ -283,6 +283,83 @@ TEST(Ranging, RhsPerturbOutsideRange_BasisChanges) {
     }
   }
   EXPECT_TRUE(found) << "No finite RHS bound found to violate; test is vacuous";
+}
+
+TEST(Ranging, AMaximizeModelReportsRangesInItsOwnSense) {
+  // The same LP written as max x1 + 2 x2. Its optimum, basis and vertex are identical, so
+  // every cost range is the minimize model's with the two sides exchanged - "the internal
+  // cost may fall by x" is "the coefficient the user wrote may rise by x" - and every row
+  // range is unchanged. Then the definition, directly: a decrease inside the reported
+  // decrease keeps the basis, one beyond it changes it.
+  const Model min_model = make_lp();
+  Model max_model = make_lp();
+  max_model.sense = ObjSense::kMaximize;
+  for (double& c : max_model.col_cost) c = -c;
+  const Options opts = ranging_opts();
+  const Solution a = solve(min_model, opts);
+  const Solution b = solve(max_model, opts);
+  ASSERT_EQ(a.status, SolveStatus::kOptimal);
+  ASSERT_EQ(b.status, SolveStatus::kOptimal);
+  ASSERT_EQ(b.col_ranging_lower.size(), a.col_ranging_lower.size());
+  for (std::size_t j = 0; j < a.col_ranging_lower.size(); ++j) {
+    EXPECT_DOUBLE_EQ(b.col_ranging_lower[j], a.col_ranging_upper[j]) << "column " << j;
+    EXPECT_DOUBLE_EQ(b.col_ranging_upper[j], a.col_ranging_lower[j]) << "column " << j;
+  }
+  for (std::size_t i = 0; i < a.row_ranging_lower.size(); ++i) {
+    EXPECT_DOUBLE_EQ(b.row_ranging_lower[i], a.row_ranging_lower[i]) << "row " << i;
+    EXPECT_DOUBLE_EQ(b.row_ranging_upper[i], a.row_ranging_upper[i]) << "row " << i;
+  }
+  bool exercised = false;
+  for (std::size_t j = 0; j < b.col_ranging_lower.size(); ++j) {
+    const double lo = b.col_ranging_lower[j];
+    if (!(lo < kInfinity) || lo <= 1e-9) continue;
+    Model inside = max_model;
+    inside.col_cost[j] -= 0.5 * lo;
+    const Solution s_in = solve(inside, opts);
+    ASSERT_EQ(s_in.status, SolveStatus::kOptimal);
+    EXPECT_TRUE(same_basis(s_in.col_status, b.col_status) &&
+                same_basis(s_in.row_status, b.row_status))
+        << "maximize column " << j << ": a decrease inside the range changed the basis";
+    Model outside = max_model;
+    outside.col_cost[j] -= lo + 1.0;
+    const Solution s_out = solve(outside, opts);
+    if (s_out.status == SolveStatus::kOptimal) {
+      EXPECT_FALSE(same_basis(s_out.col_status, b.col_status) &&
+                   same_basis(s_out.row_status, b.row_status))
+          << "maximize column " << j << ": a decrease beyond the range kept the basis";
+    }
+    exercised = true;
+  }
+  EXPECT_TRUE(exercised) << "no column with a finite allowable decrease; the test is vacuous";
+}
+
+TEST(Ranging, AFixedColumnIsUnboundedOnBothSides) {
+  // A column fixed at a value never enters the basis whatever its cost, so its range is
+  // infinite both ways, and it must not narrow the basic columns' ranges either.
+  Model m = make_lp();
+  m.col_cost = {-1.0, -2.0, 7.0};
+  m.col_lower = {0.0, 0.0, 1.0};
+  m.col_upper = {kInfinity, kInfinity, 1.0};
+  m.col_type.assign(3, VarType::kContinuous);
+  m.matrix.reset(3, 3);
+  m.matrix.add_entry(0, 0, 1.0);
+  m.matrix.add_entry(0, 1, 1.0);
+  m.matrix.add_entry(1, 0, 1.0);
+  m.matrix.add_entry(2, 1, 1.0);
+  m.matrix.add_entry(0, 2, 1.0);
+  m.matrix.finalize();
+  m.row_upper[0] = 5.0;  // x1 + x2 + x3 <= 5 with x3 = 1: the same vertex as make_lp()
+  const Solution s = solve(m, ranging_opts());
+  ASSERT_EQ(s.status, SolveStatus::kOptimal) << s.message;
+  ASSERT_EQ(s.col_ranging_lower.size(), 3u);
+  EXPECT_EQ(s.col_ranging_lower[2], kInfinity);
+  EXPECT_EQ(s.col_ranging_upper[2], kInfinity);
+  const Solution reference = solve(make_lp(), ranging_opts());
+  ASSERT_EQ(reference.status, SolveStatus::kOptimal);
+  for (std::size_t j = 0; j < 2; ++j) {
+    EXPECT_DOUBLE_EQ(s.col_ranging_lower[j], reference.col_ranging_lower[j]) << j;
+    EXPECT_DOUBLE_EQ(s.col_ranging_upper[j], reference.col_ranging_upper[j]) << j;
+  }
 }
 
 TEST(Ranging, AllValuesNonNegative) {

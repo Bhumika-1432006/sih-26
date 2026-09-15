@@ -9,9 +9,17 @@
 //
 // Populated only when the "ranging" option is true and the solve status is kOptimal.
 // Works in original (unscaled) model space; call after solve_with_scaling() has unscaled.
+//
+// THE RANGES ARE IN THE MODEL'S OWN SENSE. The arithmetic runs in minimization space,
+// where the simplex lives; for a maximize model a decrease of the internal cost is an
+// increase of the coefficient the user wrote, so the two sides are exchanged before they
+// are reported. A degenerate optimal basis - a basic variable sitting on a bound - makes
+// the ranges those of THIS basis rather than of the unique answer, and the solution says so
+// (Solution::ranging_basis_degenerate) rather than leaving the reader to guess.
 #pragma once
 
 namespace sankhya {
+class Logger;
 class Model;
 class Options;
 class Solution;
@@ -19,6 +27,7 @@ class Solution;
 
 namespace sankhya::detail {
 
-void compute_ranging(const Model& model, const Options& options, Solution& solution);
+void compute_ranging(const Model& model, const Options& options, Logger& logger,
+                     Solution& solution);
 
 }  // namespace sankhya::detail

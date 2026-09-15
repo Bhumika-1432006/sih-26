@@ -1314,27 +1314,42 @@ def verify(model: Model, solution: Solution, primal_tol: float, dual_tol: float,
                  f"{accounted:.3e} of it from per-item violations accepted above")
 
     # ---- Sensitivity ranging (optional; only checked when the .sol has the sections) ------
-    # For nonbasic columns at lower bound the cost ranging lower bound equals the reduced
-    # cost; this is the one case verify_solution.py can check without the LU factors.
+    # A nonbasic column's range is one-sided and equal to its reduced cost: at its lower
+    # bound the cost may fall by d_j (minimization space) before the column becomes
+    # attractive, at its upper bound it may rise by |d_j|. That is the one case this script
+    # can re-derive without the basis factor. The file reports ranges in the MODEL'S sense,
+    # so on a maximize model the side that carries d_j is the other one.
     # Reference: Chvatal, "Linear Programming", ch. 10 (1983).
     if solution.col_ranging_lower:
-        worst_lo, worst_lo_where = 0.0, ""
+        worst, worst_where, checked = 0.0, "", 0
         for j, name in enumerate(model.col_names):
-            if solution.col_status.get(name) != "at_lower":
+            status = solution.col_status.get(name)
+            if status not in ("at_lower", "at_upper"):
                 continue
-            dj = d[j]  # reduced cost in minimization space (>= 0 for at_lower)
-            reported = solution.col_ranging_lower.get(name)
-            if reported is None:
+            dj = d[j]  # minimization space: >= 0 at lower, <= 0 at upper
+            lo = solution.col_ranging_lower.get(name)
+            hi = solution.col_ranging_upper.get(name)
+            if lo is None or hi is None:
                 continue
-            scale_j = max(1.0, abs(dj), abs(reported))
-            err = abs(reported - dj) / scale_j
-            if err > worst_lo:
-                worst_lo, worst_lo_where = err, name
+            # (finite side in minimization space, its value) then map to the file's sense.
+            finite_is_lower_in_min = status == "at_lower"
+            finite_is_lower = finite_is_lower_in_min != model.maximize
+            reported = lo if finite_is_lower else hi
+            other = hi if finite_is_lower else lo
+            expected = abs(dj)
+            checked += 1
+            scale_j = max(1.0, expected, abs(reported))
+            err = abs(reported - expected) / scale_j
+            if not math.isinf(other):
+                err = max(err, 1.0)  # the free side must be reported as unbounded
+            if err > worst:
+                worst, worst_where = err, name
         report.check(
-            worst_lo <= 1e-6,
-            "ranging: nonbasic-at-lower cost_lo == reduced_cost",
-            f"max relative error {worst_lo:.3e}"
-            + (f" on {worst_lo_where}" if worst_lo_where else ""))
+            worst <= 1e-6,
+            "ranging: nonbasic ranges match the reduced costs",
+            f"{checked} nonbasic column(s): the bound side equals |d_j| and the other side is "
+            f"unbounded, max relative error {worst:.3e}"
+            + (f" on {worst_where}" if worst_where else ""))
 
     return report
 

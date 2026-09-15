@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <vector>
 
+#include "sankhya/logging.hpp"
 #include "sankhya/model.hpp"
 #include "sankhya/options.hpp"
 #include "sankhya/tolerances.hpp"
@@ -50,10 +51,21 @@ void ratio(double v, double current, double lb, double ub, double& lo, double& h
 
 }  // namespace
 
-void compute_ranging(const Model& model, const Options& options, Solution& solution) {
+void compute_ranging(const Model& model, const Options& options, Logger& logger,
+                     Solution& solution) {
   if (!options.get_bool("ranging")) return;
-  if (solution.status != SolveStatus::kOptimal) return;
-  if (solution.col_status.empty() || solution.row_status.empty()) return;
+  if (solution.status != SolveStatus::kOptimal) {
+    logger.warning("ranging: skipped, the status is {} and ranges are defined at an optimal "
+                   "basis only",
+                   to_string(solution.status));
+    return;
+  }
+  if (solution.col_status.empty() || solution.row_status.empty()) {
+    logger.warning(
+        "ranging: skipped, the engine produced no basis (the interior point and PDHG do "
+        "not; use the simplex)");
+    return;
+  }
 
   const Index n = model.num_cols();
   const Index m = model.num_rows();
@@ -72,21 +84,27 @@ void compute_ranging(const Model& model, const Options& options, Solution& solut
     Index p = 0;
     for (Index j = 0; j < n; ++j) {
       if (solution.col_status[static_cast<Sz>(j)] == BasisStatus::kBasic) {
-        if (p >= m) return;  // malformed
-        basis_col[static_cast<Sz>(p)] = j;
-        pos_of[static_cast<Sz>(j)] = p;
+        if (p < m) {
+          basis_col[static_cast<Sz>(p)] = j;
+          pos_of[static_cast<Sz>(j)] = p;
+        }
         ++p;
       }
     }
     for (Index i = 0; i < m; ++i) {
       if (solution.row_status[static_cast<Sz>(i)] == BasisStatus::kBasic) {
-        if (p >= m) return;
-        basis_col[static_cast<Sz>(p)] = n + i;
-        pos_of[static_cast<Sz>(n + i)] = p;
+        if (p < m) {
+          basis_col[static_cast<Sz>(p)] = n + i;
+          pos_of[static_cast<Sz>(n + i)] = p;
+        }
         ++p;
       }
     }
-    if (p != m) return;  // basis count mismatch
+    if (p != m) {
+      logger.warning("ranging: skipped, the reported basis has {} basic variables for {} rows",
+                     p, m);
+      return;
+    }
   }
 
   // --- 2. Build LU columns and factorize the basis ---
@@ -107,7 +125,42 @@ void compute_ranging(const Model& model, const Options& options, Solution& solut
   }
 
   SparseLu lu;
-  if (!lu.factorize(lu_cols, m, tol::kPivotTolerance, tol::kMarkowitzThreshold)) return;
+  if (!lu.factorize(lu_cols, m, tol::kPivotTolerance, tol::kMarkowitzThreshold)) {
+    logger.warning("ranging: skipped, the reported basis is singular to working precision");
+    return;
+  }
+
+  // DEGENERACY, STATED. A basic variable on one of its bounds means the vertex has more
+  // than one basis, and the ranges below belong to the one in hand; a planner reading
+  // "the plan holds until the price moves by x" must know when x is a property of the
+  // tie-break rather than of the plan (#220, item 4).
+  Index degenerate = 0;
+  for (Index p = 0; p < m; ++p) {
+    const Index col = basis_col[static_cast<Sz>(p)];
+    double lb, ub, cur;
+    if (col < n) {
+      const Sz cj = static_cast<Sz>(col);
+      lb = model.col_lower[cj];
+      ub = model.col_upper[cj];
+      cur = solution.col_value[cj];
+    } else {
+      const Sz ri = static_cast<Sz>(col - n);
+      lb = model.row_lower[ri];
+      ub = model.row_upper[ri];
+      cur = solution.row_activity[ri];
+    }
+    const double room = tol::kPrimalFeasibility * std::max(1.0, std::abs(cur));
+    if ((lb > -kInfinity && cur - lb <= room) || (ub < kInfinity && ub - cur <= room)) {
+      ++degenerate;
+    }
+  }
+  solution.ranging_basis_degenerate = degenerate > 0;
+  if (degenerate > 0) {
+    logger.warning(
+        "ranging: the optimal basis is degenerate ({} basic variable(s) on a bound); the "
+        "ranges are those of this basis, not of the unique optimum",
+        degenerate);
+  }
 
   // --- 3. Allocate output ---
   solution.col_ranging_lower.assign(sn, kInfinity);
@@ -133,7 +186,11 @@ void compute_ranging(const Model& model, const Options& options, Solution& solut
     const BasisStatus st = solution.col_status[jj];
     const double dj = d[jj];
 
-    if (st == BasisStatus::kAtLower || st == BasisStatus::kFixed) {
+    if (st == BasisStatus::kFixed) {
+      // A fixed column never enters whatever its cost: both sides are unbounded.
+      continue;
+    }
+    if (st == BasisStatus::kAtLower) {
       // dj >= 0: decrease by at most dj, increase freely.
       solution.col_ranging_lower[jj] = dj;
       solution.col_ranging_upper[jj] = kInfinity;
@@ -176,7 +233,8 @@ void compute_ranging(const Model& model, const Options& options, Solution& solut
     for (Index k = 0; k < n; ++k) {
       const Sz kk = static_cast<Sz>(k);
       const BasisStatus sk = solution.col_status[kk];
-      if (sk == BasisStatus::kBasic) continue;
+      // A fixed column cannot enter, so its reduced cost's sign never binds the range.
+      if (sk == BasisStatus::kBasic || sk == BasisStatus::kFixed) continue;
 
       double alpha = 0.0;
       const ColumnView cv = model.matrix.column(k);
@@ -185,7 +243,7 @@ void compute_ranging(const Model& model, const Options& options, Solution& solut
       if (std::abs(alpha) < tol::kPivotTolerance) continue;
 
       const double dk = d[kk];
-      if (sk == BasisStatus::kAtLower || sk == BasisStatus::kFixed) {
+      if (sk == BasisStatus::kAtLower) {
         if (alpha > 0.0)
           hi = std::min(hi, dk / alpha);
         else
@@ -202,13 +260,14 @@ void compute_ranging(const Model& model, const Options& options, Solution& solut
     for (Index i = 0; i < m; ++i) {
       const Sz ii = static_cast<Sz>(i);
       const BasisStatus si = solution.row_status[ii];
-      if (si == BasisStatus::kBasic) continue;
+      // An equality row's logical is fixed and never enters; its dual's sign is free.
+      if (si == BasisStatus::kBasic || si == BasisStatus::kFixed) continue;
 
       const double alpha = -work[ii];
       if (std::abs(alpha) < tol::kPivotTolerance) continue;
 
       const double dk = y[ii];
-      if (si == BasisStatus::kAtLower || si == BasisStatus::kFixed) {
+      if (si == BasisStatus::kAtLower) {
         if (alpha > 0.0)
           hi = std::min(hi, dk / alpha);
         else
@@ -225,9 +284,24 @@ void compute_ranging(const Model& model, const Options& options, Solution& solut
     solution.col_ranging_upper[jj] = std::max(hi, 0.0);
   }
 
+  // THE MODEL'S OWN SENSE. Everything above is a range on the minimization-space cost
+  // c' = sense * c. For a maximize model c' = -c, so "c' may fall by x" is "c may rise by
+  // x": the two sides change places. Measured before this swap on the demo blend
+  // (maximize): Bonny Light at its cap was reported as "decrease inf, increase 0.34" and
+  // re-solving showed the basis change on a DEcrease of 0.37 and survive an increase.
+  if (model.sense == ObjSense::kMaximize) {
+    std::swap(solution.col_ranging_lower, solution.col_ranging_upper);
+  }
+
   // --- 5. RHS ranging for each row ---
   // FTRAN(e_i) -> v = B^{-1} e_i.  Basic variable at position p changes by v[p]*delta
   // when the active bound of row i increases by delta.  Ratio test on those variables.
+  //
+  // For a row whose logical is BASIC - a constraint that is not binding - there is no
+  // active bound and B^{-1} e_i is minus the logical's own unit vector, so the ratio test
+  // reduces to the slack on each side: row_ranging_lower is how far the UPPER bound can
+  // fall and row_ranging_upper how far the LOWER bound can rise before the row binds and
+  // the basis changes. Independent of the objective sense.
   for (Index i = 0; i < m; ++i) {
     const Sz ii = static_cast<Sz>(i);
     std::fill(work.begin(), work.end(), 0.0);

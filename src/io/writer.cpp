@@ -154,6 +154,10 @@ bool write_solution(const std::string& path, const Model& model, const Solution&
     // element follows it). `not-claimed` when a trial solve was inconclusive.
     fmt::print(out, "iis_irreducible {}\n", solution.iis_inconclusive ? "not-claimed" : "yes");
   }
+  if (!solution.col_ranging_lower.empty()) {
+    fmt::print(out, "ranging_basis {}\n",
+               solution.ranging_basis_degenerate ? "degenerate" : "nondegenerate");
+  }
   fmt::print(out, "rows {}\n", m);
   fmt::print(out, "columns {}\n", n);
   fmt::print(out, "iterations {}\n", solution.iterations);
@@ -288,7 +292,10 @@ bool write_solution(const std::string& path, const Model& model, const Solution&
   if (!solution.col_ranging_lower.empty() &&
       solution.col_ranging_lower.size() == static_cast<std::size_t>(n) &&
       solution.row_ranging_lower.size() == static_cast<std::size_t>(m)) {
-    fmt::print(out, "\n# name obj_lo obj_hi\n");
+    fmt::print(out,
+               "\n# Sensitivity ranging (#220), in the model's own sense: how far each cost\n"
+               "# coefficient may fall and rise before the optimal basis changes.\n"
+               "# name allow_decrease allow_increase\n");
     fmt::print(out, "begin ranging_columns {}\n", n);
     for (Index j = 0; j < n; ++j) {
       const auto jj = static_cast<std::size_t>(j);
@@ -296,7 +303,11 @@ bool write_solution(const std::string& path, const Model& model, const Solution&
                  exact(solution.col_ranging_lower[jj]), exact(solution.col_ranging_upper[jj]));
     }
     fmt::print(out, "end ranging_columns\n");
-    fmt::print(out, "\n# name rhs_lo rhs_hi\n");
+    fmt::print(out,
+               "\n# How far each row's active bound may fall and rise before the basis becomes\n"
+               "# infeasible; for a row that is not binding, how far its upper bound may fall\n"
+               "# and its lower bound rise before it binds.\n"
+               "# name allow_decrease allow_increase\n");
     fmt::print(out, "begin ranging_rows {}\n", m);
     for (Index i = 0; i < m; ++i) {
       const auto ii = static_cast<std::size_t>(i);
