@@ -259,6 +259,26 @@ class Solution {
   /// carries the feasible point it starts from.
   std::vector<double> primal_ray;
 
+  // ---- Sensitivity ranging (populated only when options.get_bool("ranging") is true) ----
+  //
+  // An ADDITION to this frozen interface, called out here as farkas_dual was in #191; every
+  // field defaults to empty or false and every existing consumer ignores them (#220).
+  //
+  // For column j, in the MODEL'S OWN SENSE: col_ranging_lower[j] = how far c_j can fall
+  //   and col_ranging_upper[j] how far it can rise before the optimal basis changes.
+  // For row i: row_ranging_lower[i] = how far the row's active bound can fall and
+  //   row_ranging_upper[i] how far it can rise before the basis becomes primal infeasible;
+  //   for a row that is not binding, how far its upper bound can fall and its lower bound
+  //   rise before it binds. A fixed column reports +inf on both sides.
+  // ranging_basis_degenerate: a basic variable sits on a bound, so the vertex has more than
+  //   one basis and the ranges are those of the reported one, not of the unique optimum.
+  // Reference: Chvatal, "Linear Programming", ch. 10 (W. H. Freeman, 1983).
+  std::vector<double> col_ranging_lower;
+  std::vector<double> col_ranging_upper;
+  std::vector<double> row_ranging_lower;
+  std::vector<double> row_ranging_upper;
+  bool ranging_basis_degenerate = false;
+
   // ---- Irreducible Infeasible Subsystem (IIS), computed by the deletion filter (#217) ----
   //
   // An ADDITION to this frozen interface, called out here as farkas_dual was in #191. These

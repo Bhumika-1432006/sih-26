@@ -221,6 +221,10 @@ int main(int argc, char** argv) {
   solve_cmd->add_flag("--gpu", use_gpu,
                       "Use the CUDA backend where one is compiled in; otherwise warn and "
                       "run on the CPU (the same as --option gpu=true)");
+  bool compute_ranging = false;
+  solve_cmd->add_flag("--ranging", compute_ranging,
+                      "Compute LP sensitivity ranges (objective and RHS) at optimality "
+                      "and write them to the .sol file");
 
   CLI::App* info_cmd = app.add_subcommand("info", "Report the dimensions of a model file");
   std::string info_path;
@@ -243,6 +247,7 @@ int main(int argc, char** argv) {
   if (!apply_options(option_assignments, &options)) return 2;
   if (time_limit > 0.0) options.set_double("time_limit", time_limit);
   if (use_gpu) options.set_bool("gpu", true);
+  if (compute_ranging) options.set_bool("ranging", true);
 
   if (info_cmd->parsed()) {
     sankhya::Model model;
@@ -280,6 +285,62 @@ int main(int argc, char** argv) {
     fmt::print("{:<22}{:.3e}\n", "primal infeasibility", solution.primal_infeasibility);
     fmt::print("{:<22}{:.3e}\n", "dual infeasibility", solution.dual_infeasibility);
     if (!solution.message.empty()) fmt::print("{:<22}{}\n", "message", solution.message);
+    if (!solution.col_ranging_lower.empty()) {
+      // Print the ten most sensitive objective coefficients and row bounds.
+      const int kTop = 10;
+      fmt::print("\nTop {} most sensitive objective coefficients{}:\n", kTop,
+                 solution.ranging_basis_degenerate
+                     ? " (the basis is degenerate: these are its ranges, not the optimum's)"
+                     : "");
+      fmt::print("  {:<30} {:>14} {:>14}\n", "column", "allow_decrease", "allow_increase");
+      struct ColRangeRow {
+        double sensitivity;
+        sankhya::Index j;
+      };
+      std::vector<ColRangeRow> rows;
+      rows.reserve(static_cast<std::size_t>(solution.col_ranging_lower.size()));
+      for (std::size_t jj = 0; jj < solution.col_ranging_lower.size(); ++jj) {
+        const double lo = solution.col_ranging_lower[jj];
+        const double hi = solution.col_ranging_upper[jj];
+        const double s = std::min(lo, hi);
+        rows.push_back({s, static_cast<sankhya::Index>(jj)});
+      }
+      std::sort(rows.begin(), rows.end(), [](const ColRangeRow& a, const ColRangeRow& b) {
+        return a.sensitivity < b.sensitivity;
+      });
+      const int cols_shown = std::min(kTop, static_cast<int>(rows.size()));
+      for (int k = 0; k < cols_shown; ++k) {
+        const std::size_t jj = static_cast<std::size_t>(rows[static_cast<std::size_t>(k)].j);
+        const std::string name =
+            model.col_names.empty() ? fmt::format("x{}", jj) : model.col_names[jj];
+        fmt::print("  {:<30} {:>14.6g} {:>14.6g}\n", name, solution.col_ranging_lower[jj],
+                   solution.col_ranging_upper[jj]);
+      }
+      fmt::print("\nTop {} most sensitive row bounds:\n", kTop);
+      fmt::print("  {:<30} {:>14} {:>14}\n", "row", "allow_decrease", "allow_increase");
+      struct RowRangeRow {
+        double sensitivity;
+        sankhya::Index i;
+      };
+      std::vector<RowRangeRow> rrows;
+      rrows.reserve(solution.row_ranging_lower.size());
+      for (std::size_t ii = 0; ii < solution.row_ranging_lower.size(); ++ii) {
+        const double lo = solution.row_ranging_lower[ii];
+        const double hi = solution.row_ranging_upper[ii];
+        rrows.push_back({std::min(lo, hi), static_cast<sankhya::Index>(ii)});
+      }
+      std::sort(rrows.begin(), rrows.end(), [](const RowRangeRow& a, const RowRangeRow& b) {
+        return a.sensitivity < b.sensitivity;
+      });
+      const int rows_shown = std::min(kTop, static_cast<int>(rrows.size()));
+      for (int k = 0; k < rows_shown; ++k) {
+        const std::size_t ii = static_cast<std::size_t>(rrows[static_cast<std::size_t>(k)].i);
+        const std::string name =
+            model.row_names.empty() ? fmt::format("r{}", ii) : model.row_names[ii];
+        fmt::print("  {:<30} {:>14.6g} {:>14.6g}\n", name, solution.row_ranging_lower[ii],
+                   solution.row_ranging_upper[ii]);
+      }
+    }
 
     // IIS message: "infeasible; the smallest set of constraints that cannot hold together
     // is ..." - the industrial diagnosis a planner reads first (#217).

@@ -154,6 +154,10 @@ bool write_solution(const std::string& path, const Model& model, const Solution&
     // element follows it). `not-claimed` when a trial solve was inconclusive.
     fmt::print(out, "iis_irreducible {}\n", solution.iis_inconclusive ? "not-claimed" : "yes");
   }
+  if (!solution.col_ranging_lower.empty()) {
+    fmt::print(out, "ranging_basis {}\n",
+               solution.ranging_basis_degenerate ? "degenerate" : "nondegenerate");
+  }
   fmt::print(out, "rows {}\n", m);
   fmt::print(out, "columns {}\n", n);
   fmt::print(out, "iterations {}\n", solution.iterations);
@@ -283,6 +287,35 @@ bool write_solution(const std::string& path, const Model& model, const Solution&
                status_or(solution.row_status, i));
   }
   fmt::print(out, "end rows\n");
+
+  // Sensitivity ranging: objective and RHS intervals for each column and row.
+  if (!solution.col_ranging_lower.empty() &&
+      solution.col_ranging_lower.size() == static_cast<std::size_t>(n) &&
+      solution.row_ranging_lower.size() == static_cast<std::size_t>(m)) {
+    fmt::print(out,
+               "\n# Sensitivity ranging (#220), in the model's own sense: how far each cost\n"
+               "# coefficient may fall and rise before the optimal basis changes.\n"
+               "# name allow_decrease allow_increase\n");
+    fmt::print(out, "begin ranging_columns {}\n", n);
+    for (Index j = 0; j < n; ++j) {
+      const auto jj = static_cast<std::size_t>(j);
+      fmt::print(out, "{} {} {}\n", quoted_name(column_name(model, j)),
+                 exact(solution.col_ranging_lower[jj]), exact(solution.col_ranging_upper[jj]));
+    }
+    fmt::print(out, "end ranging_columns\n");
+    fmt::print(out,
+               "\n# How far each row's active bound may fall and rise before the basis\n"
+               "# becomes infeasible; for a row that is not binding, how far its upper\n"
+               "# bound may fall and its lower bound rise before it binds.\n"
+               "# name allow_decrease allow_increase\n");
+    fmt::print(out, "begin ranging_rows {}\n", m);
+    for (Index i = 0; i < m; ++i) {
+      const auto ii = static_cast<std::size_t>(i);
+      fmt::print(out, "{} {} {}\n", quoted_name(row_name(model, i)),
+                 exact(solution.row_ranging_lower[ii]), exact(solution.row_ranging_upper[ii]));
+    }
+    fmt::print(out, "end ranging_rows\n");
+  }
 
   // The ray, read together with the point above: x + t*d stays feasible for every
   // t >= 0 and the objective improves without limit along it (#191).
