@@ -31,6 +31,7 @@
 #include "sankhya/qp.hpp"
 #include "sankhya/solve_control.hpp"
 #include "sankhya/timer.hpp"
+#include "simplex/ranging.hpp"
 #include "util/threads.hpp"
 
 #include "../simplex/primal_simplex.hpp"
@@ -438,6 +439,9 @@ Solution solve(const Model& model, const Options& options, SolveControl* control
     reconcile_status_with_measurement(&solution, options, logger, /*check_dual=*/true);
     refuse_a_non_finite_answer(&solution, logger);
     keep_only_a_proved_certificate(&solution, model, logger);
+    // Sensitivity ranging runs on the ORIGINAL model after postsolve so the vectors are
+    // full-size and the basis is expressed in terms of original column and row indices.
+    detail::compute_ranging(model, options, logger, solution);
     compute_iis(model, &solution, options, logger);
     logger.info("Result: {}  objective {:.10g}  {} iterations  {:.3f}s",
                 to_string(solution.status), solution.objective, solution.iterations,

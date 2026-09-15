@@ -409,6 +409,11 @@ class Solution:
         # without limit, checked together with the feasible point in the columns section.
         self.farkas: dict[str, float] = {}
         self.ray: dict[str, float] = {}
+        # Sensitivity ranging (populated when --ranging was passed to the solver).
+        self.col_ranging_lower: dict[str, float] = {}
+        self.col_ranging_upper: dict[str, float] = {}
+        self.row_ranging_lower: dict[str, float] = {}
+        self.row_ranging_upper: dict[str, float] = {}
         self.iis: list[tuple[str, str]] = []
         # One witness per IIS element: (kind, name, {column name: value}).
         self.iis_witnesses: list[tuple[str, str, dict[str, float]]] = []
@@ -498,6 +503,12 @@ def parse_sol(path: Path) -> Solution:
                 solution.row_activity[fields[0]] = float(fields[1])
                 solution.row_dual[fields[0]] = float(fields[2])
                 solution.row_status[fields[0]] = fields[3] if len(fields) > 3 else "unknown"
+            elif block == "ranging_columns" and len(fields) >= 3:
+                solution.col_ranging_lower[fields[0]] = float(fields[1])
+                solution.col_ranging_upper[fields[0]] = float(fields[2])
+            elif block == "ranging_rows" and len(fields) >= 3:
+                solution.row_ranging_lower[fields[0]] = float(fields[1])
+                solution.row_ranging_upper[fields[0]] = float(fields[2])
             elif not block and len(fields) >= 2:
                 solution.header[fields[0]] = " ".join(fields[1:])
     return solution
@@ -1301,6 +1312,45 @@ def verify(model: Model, solution: Solution, primal_tol: float, dual_tol: float,
                  f"primal {objective:.12e}  dual {dual_objective:.12e}  "
                  f"gap {gap:.3e} (relative {gap / scale:.3e}), "
                  f"{accounted:.3e} of it from per-item violations accepted above")
+
+    # ---- Sensitivity ranging (optional; only checked when the .sol has the sections) ------
+    # A nonbasic column's range is one-sided and equal to its reduced cost: at its lower
+    # bound the cost may fall by d_j (minimization space) before the column becomes
+    # attractive, at its upper bound it may rise by |d_j|. That is the one case this script
+    # can re-derive without the basis factor. The file reports ranges in the MODEL'S sense,
+    # so on a maximize model the side that carries d_j is the other one.
+    # Reference: Chvatal, "Linear Programming", ch. 10 (1983).
+    if solution.col_ranging_lower:
+        worst, worst_where, checked = 0.0, "", 0
+        for j, name in enumerate(model.col_names):
+            status = solution.col_status.get(name)
+            if status not in ("at_lower", "at_upper"):
+                continue
+            dj = d[j]  # minimization space: >= 0 at lower, <= 0 at upper
+            lo = solution.col_ranging_lower.get(name)
+            hi = solution.col_ranging_upper.get(name)
+            if lo is None or hi is None:
+                continue
+            # (finite side in minimization space, its value) then map to the file's sense.
+            finite_is_lower_in_min = status == "at_lower"
+            finite_is_lower = finite_is_lower_in_min != model.maximize
+            reported = lo if finite_is_lower else hi
+            other = hi if finite_is_lower else lo
+            expected = abs(dj)
+            checked += 1
+            scale_j = max(1.0, expected, abs(reported))
+            err = abs(reported - expected) / scale_j
+            if not math.isinf(other):
+                err = max(err, 1.0)  # the free side must be reported as unbounded
+            if err > worst:
+                worst, worst_where = err, name
+        report.check(
+            worst <= 1e-6,
+            "ranging: nonbasic ranges match the reduced costs",
+            f"{checked} nonbasic column(s): the bound side equals |d_j| and the other side is "
+            f"unbounded, max relative error {worst:.3e}"
+            + (f" on {worst_where}" if worst_where else ""))
+
     return report
 
 

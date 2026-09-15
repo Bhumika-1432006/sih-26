@@ -226,6 +226,17 @@ const std::vector<OptionSpec>& Options::registry() {
                  0.0,
                  0.0,
                  {}});
+    s.push_back({"ranging",
+                 OptionType::Bool,
+                 false,
+                 "Compute LP sensitivity ranges at optimality and write them to the .sol file "
+                 "(the CLI spells it --ranging). For each column, the interval over which its "
+                 "cost coefficient can move before the optimal basis changes; for each row, "
+                 "the interval over which the active bound can move before the basis becomes "
+                 "primal infeasible. Requires the primal simplex to produce a basis.",
+                 0.0,
+                 0.0,
+                 {}});
     s.push_back({"threads",
                  OptionType::Int,
                  std::int64_t{1},
