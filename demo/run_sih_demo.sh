@@ -335,9 +335,9 @@ echo "--- Sensitivity ranging: how far each price and capacity can move (#220) -
 echo
 cat <<'RANGING_INTRO'
 The LP already gave the optimal blend and the shadow prices. It also answers "how sure is it":
-for each crude price coefficient, the interval over which the current blend stays optimal; for
-each capacity constraint, the interval over which the plan holds before a different basis takes
-over. The planner reads the ten most sensitive of each before anything else.
+for each crude's margin, how far it can fall and how far it can rise before the blend changes;
+for each constraint, how far its bound can move before the plan changes. The planner reads the
+ten most sensitive of each before anything else.
 
 RANGING_INTRO
 solve_case "crude_blend_ranging" "demo/crude_blend.mps" --ranging
@@ -345,19 +345,29 @@ echo "Ten most sensitive objective (cost) ranges:"
 printf "    %-30s %14s %14s\n" "crude / column" "allow_decrease" "allow_increase"
 sed -n '/begin ranging_columns/,/end ranging_columns/p' "$WORK/crude_blend_ranging.sol" \
   | grep -v '^begin\|^end' \
-  | awk '{print $2+0, $1, $2, $3}' \
-  | sort -n \
+  | awk '{lo = ($2 == "inf") ? 1e300 : $2 + 0; hi = ($3 == "inf") ? 1e300 : $3 + 0;
+          print (lo < hi ? lo : hi), $1, $2, $3}' \
+  | sort -g \
   | head -10 \
-  | awk '{printf "    %-30s %14.6g %14.6g\n", $2, $3, $4}'
+  | awk '{printf "    %-30s %14s %14s\n", $2, ($3 == "inf" ? "inf" : sprintf("%.6g", $3)),
+                 ($4 == "inf" ? "inf" : sprintf("%.6g", $4))}'
 echo
 echo "Ten most sensitive RHS (capacity) ranges:"
 printf "    %-30s %14s %14s\n" "row / constraint" "allow_decrease" "allow_increase"
 sed -n '/begin ranging_rows/,/end ranging_rows/p' "$WORK/crude_blend_ranging.sol" \
   | grep -v '^begin\|^end' \
-  | awk '{print $2+0, $1, $2, $3}' \
-  | sort -n \
+  | awk '{lo = ($2 == "inf") ? 1e300 : $2 + 0; hi = ($3 == "inf") ? 1e300 : $3 + 0;
+          print (lo < hi ? lo : hi), $1, $2, $3}' \
+  | sort -g \
   | head -10 \
-  | awk '{printf "    %-30s %14.6g %14.6g\n", $2, $3, $4}'
+  | awk '{printf "    %-30s %14s %14s\n", $2, ($3 == "inf" ? "inf" : sprintf("%.6g", $3)),
+                 ($4 == "inf" ? "inf" : sprintf("%.6g", $4))}'
+# "Most sensitive" above is the smaller of the two sides, with inf sorted last.
+echo
+echo "    The ranges are in the model's own sense (this blend maximizes margin), and they are"
+echo "    those of the reported basis: $(grep '^ranging_basis' "$WORK/crude_blend_ranging.sol" | cut -d' ' -f2)."
+echo "    Checked by the definition when this was reviewed: a price moved 0.9x of its reported"
+echo "    side keeps the blend, moved 1.1x of it changes the blend."
 
 # -------------------------------------------------------------------------------------------
 echo
