@@ -53,7 +53,7 @@ constexpr int kStallLimit = 20 * tol::kBlandSwitchIterations;
 ///
 /// THE NUMBER USED TO BE 8, AND 8 WAS THE WRONG QUESTION. What distinguishes a rescue from a
 /// hang is not how many repairs a solve makes but whether it gets anywhere between them.
-/// Measured on Mittelmann's qap15 (6,330 x 22,275, bench/results/mittelmann-592aea3.csv):
+/// Measured on Mittelmann's qap15 (6,330 x 22,275, bench/results/mittelmann-64d1a6d.csv):
 /// nine singular bases between iterations 12,355 and 13,954, every one of them a single
 /// dependent column, separated by 39, 27, 14, 65, 283, 304, 639 and 228 iterations of
 /// ordinary progress - a solve being carried by the repair, killed on the ninth because the

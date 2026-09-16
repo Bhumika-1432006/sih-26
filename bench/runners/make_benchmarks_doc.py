@@ -573,7 +573,7 @@ def pdhg_section(path: Path | None) -> str:
         "of the standard - absolute primal feasibility is kept, so `feasible` still means a "
         "feasible point - and reports the point as `feasible` unless it meets the full "
         "standard anyway. Measured on these instances at 1e-4 it costs 0.85x the iterations "
-        "(`bench/results/pdhg-stop-at-request-f18d4b0.csv`) and turns `share2b` from an "
+        "(`bench/results/pdhg-stop-at-request-02cd92c.csv`) and turns `share2b` from an "
         "iteration limit into a usable point at 807,760. The two tolerance columns stay "
         "identical on `adlittle`, `israel` and `sc50b` even with the switch on, because on "
         "those the kept primal clause is what binds.",
@@ -616,7 +616,7 @@ def cuts_ab_paragraph() -> str:
     """The root-cut A/B (#159), computed from its two CSVs rather than typed.
 
     Both runs were made at one commit on one machine - first on the PR branch that added the
-    cuts, since f7ca7e9 on main -
+    cuts, since bf3df02 on main -
     with `enable_root_cuts` off and on and nothing else different. The option's own
     description quotes these numbers; recomputing them here on every regeneration is what
     keeps the description, this document and the files from disagreeing.
@@ -1132,17 +1132,17 @@ def structured_scale_section(random_path: Path | None, staircase_path: Path | No
                 "",
             ]
     # The row that found a defect. The first measurement of this family, committed as
-    # scale-staircase-bb4eefa.csv and kept, reported the 20,000-row interior-point solve as
+    # scale-staircase-81596a3.csv and kept, reported the 20,000-row interior-point solve as
     # a numerical failure after 300 iterations. Running it is what found the defect fixed in
     # #205: the method had converged to a relative gap of 1e-7, the next factorization broke
     # down as the barrier vanished, and the loop then ran on a NaN iterate that had
     # overwritten the answer. The re-measurement after the fix is the CSV rendered above,
     # where that row reports the point it had in fact reached.
     twenty_k = row_for(stair, 20000, "ipm")
-    if twenty_k is not None and staircase_path.name != "scale-staircase-bb4eefa.csv":
+    if twenty_k is not None and staircase_path.name != "scale-staircase-81596a3.csv":
         out += [
             f"The 20,000-row `ipm` row is the one to read against the first measurement of "
-            f"this family, `bench/results/scale-staircase-bb4eefa.csv`, where it was a "
+            f"this family, `bench/results/scale-staircase-81596a3.csv`, where it was a "
             f"numerical failure after 300 iterations. Running that row is what found the "
             f"defect fixed in #205 - the method had converged to a relative gap of 1e-7 and "
             f"then iterated on a NaN that overwrote the answer - and here it reports "

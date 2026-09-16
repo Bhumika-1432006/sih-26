@@ -2,7 +2,7 @@
 
 The team has asked for GPU-accelerated hardware. This is what to do with it the day it comes,
 in what order, with what tests, and what it will and will not let us claim. It is written
-against `main` at `54fcb6f` (2026-09-16) and the four GPU issues that already define the
+against `main` at `b58a77d` (2026-09-16) and the four GPU issues that already define the
 track: [#16](https://github.com/thegoodengineer/sih-26/issues/16) plumbing,
 [#17](https://github.com/thegoodengineer/sih-26/issues/17) kernels,
 [#18](https://github.com/thegoodengineer/sih-26/issues/18) large instances (done),
@@ -19,7 +19,7 @@ papers named in #17, not cuPDLP's code.
 
 | piece | state |
 |---|---|
-| The engine to accelerate | Restarted PDHG on the CPU, `src/pdhg/pdhg.cpp` (747 lines): Ruiz + Pock-Chambolle scaling, adaptive step size, primal weight, restarts, a convergence test every 40 iterations, an interior-point polish of its answer by default (#229). 9 of 9 committed Netlib instances to `optimal` at 1e-8 on `main` at `79ec7f7` (`bench/results/pdhg-79ec7f7.csv`). |
+| The engine to accelerate | Restarted PDHG on the CPU, `src/pdhg/pdhg.cpp` (747 lines): Ruiz + Pock-Chambolle scaling, adaptive step size, primal weight, restarts, a convergence test every 40 iterations, an interior-point polish of its answer by default (#229). 9 of 9 committed Netlib instances to `optimal` at 1e-8 on `main` at `4177ae6` (`bench/results/pdhg-4177ae6.csv`). |
 | The instances that make a GPU comparison mean something | `bench/runners/generate_large_lp.py` (#18, done): random and staircase families to a million rows with the optimum exact by construction; `generate_refinery_lp.py` (#211): a refinery planning LP at 12, 365 and 8,760 periods (1,068 / 32,485 / 779,640 rows). Measured on the CPU in `bench/results/scale-*.csv`. |
 | The CUDA backend | PR [#153](https://github.com/thegoodengineer/sih-26/pull/153) (Ayush): `src/gpu/pdhg_cuda.cu` (1,143 lines), a device probe, CSR and CSC on the device, fused primal/dual/interaction kernels, batches of 40 iterations between host syncs, a CPU fallback below 20,000 post-presolve nonzeros, a compile-only CUDA CI job. It has never been built, run or measured inside this repository's evidence chain, its description carries no terminal output, and it is 75 commits behind `main` with a 555-line change to the CPU engine's file. |
 | The build switch | `SANKHYA_ENABLE_CUDA` in `CMakeLists.txt`, default OFF; `--gpu` warns and runs on the CPU. |
@@ -207,7 +207,7 @@ evidence that backs it, and what they have that we do not.
 **Where we are behind, on the same evidence**
 
 1. Raw simplex speed: about twice HiGHS's time on the Netlib medium tier
-   (`bench/results/compare-highs-medium-f7ca7e9*.csv`), and HiGHS's devex takes fewer
+   (`bench/results/compare-highs-medium-bf3df02*.csv`), and HiGHS's devex takes fewer
    iterations.
 2. MILP: 9 of 30 MIPLIB proofs; no MIR cuts, no cuts below the root, one core.
 3. Large LPs: Mittelmann 0 of 8; the interior point runs out of memory on the 100,000-row

@@ -31,8 +31,8 @@ Nine instances, committed to the repository so a fresh clone can reproduce this 
 network. **This is the set `demo/run_demo.sh` lets a judge pick from, and it is the easy end
 of Netlib.** Its pass rate is not the headline; section 1c is.
 
-Source CSV: `bench/results/netlib-small-53cbe16.csv`  
-Commit `53cbe16` · machine `Windows-AMD64` · generated 2026-09-09T03:41:33+00:00
+Source CSV: `bench/results/netlib-small-2b4eb6b.csv`  
+Commit `2b4eb6b` · machine `Windows-AMD64` · generated 2026-09-09T03:41:33+00:00
 
 **9 of 9 instances in this working set** matched their published optimum to a relative 1e-6 **and** passed independent verification by `tools/verify_solution.py`.
 
@@ -61,8 +61,8 @@ Every instance in this set passed.
 
 ### 1b. The medium tier — instances up to 500 rows
 
-Source CSV: `bench/results/netlib-medium-53cbe16.csv`  
-Commit `53cbe16` · machine `Windows-AMD64` · generated 2026-09-09T03:36:04+00:00
+Source CSV: `bench/results/netlib-medium-2b4eb6b.csv`  
+Commit `2b4eb6b` · machine `Windows-AMD64` · generated 2026-09-09T03:36:04+00:00
 
 **48 of 50 instances in this working set** matched their published optimum to a relative 1e-6 **and** passed independent verification by `tools/verify_solution.py`.
 
@@ -140,8 +140,8 @@ Every instance in Netlib's summary table. Both tiers above are defined by a row 
 makes them the easier half of the library by construction; this is the number Phase 6's
 ">= 95% of Netlib" exit criterion is measured against, and the one the README quotes.
 
-Source CSV: `bench/results/netlib-full-53cbe16.csv`  
-Commit `53cbe16` · machine `Windows-AMD64` · generated 2026-09-08T11:58:38+00:00
+Source CSV: `bench/results/netlib-full-2b4eb6b.csv`  
+Commit `2b4eb6b` · machine `Windows-AMD64` · generated 2026-09-08T11:58:38+00:00
 
 **78 of 89 instances in this working set** matched their published optimum to a relative 1e-6 **and** passed independent verification by `tools/verify_solution.py`.
 
@@ -263,8 +263,8 @@ instances of that size and name what happens. These are the eight smallest archi
 Mittelmann's LP test set (`bench/runners/fetch_mittelmann.py`, provenance in
 `data/mittelmann/reference.json`).
 
-Source CSV: `bench/results/mittelmann-f7ca7e9.csv`  
-Commit `f7ca7e9` · machine `Windows-AMD64` · time limit 300 s per instance, both solvers
+Source CSV: `bench/results/mittelmann-bf3df02.csv`  
+Commit `bf3df02` · machine `Windows-AMD64` · time limit 300 s per instance, both solvers
 
 **0 of 8** instances reached `optimal` inside the limit; **0 of 8** also passed the independent verifier and agree with HiGHS. HiGHS, run as a separate process under the same limit, finished **4 of 8**.
 
@@ -291,15 +291,15 @@ accuracy asked of it - which is why this section reports two tolerances separate
 than one blended number. It is also the engine the GPU work targets, so its CPU behaviour is
 the baseline every GPU claim will be measured against.
 
-Source CSV: `bench/results/pdhg-79ec7f7.csv`  
-Commit `79ec7f7` · machine `Windows-AMD64` · 9 instances, the ones committed to the repository
+Source CSV: `bench/results/pdhg-4177ae6.csv`  
+Commit `4177ae6` · machine `Windows-AMD64` · 9 instances, the ones committed to the repository
 
 - **9 of 9** reach `optimal` at a requested 0.0001 with restarts on.
 - **9 of 9** reach `optimal` at a requested 1e-08 with restarts on, **9 of 9** with restarts off.
 
 `optimal` here means what it means everywhere else in this document: the point also survives the project's absolute tolerances, not merely the relative ones the first-order loop converges on. That distinction is the whole of #179 - the loop used to stop on the relative measure and the report then downgraded the point it stopped on, so the engine gave up early and handed back the weaker answer.
 
-**Read the two tolerance columns together, because they are the same run.** Since #179 the loop stops only where the absolute standard is met, so a request looser than that standard no longer stops the solve any earlier - ask for 1e-4 and you get the 1e-8 point, at the 1e-8 cost. That is the honest reading of the identical columns below, and it is a real trade: the old behaviour honoured a loose request and returned a point it then had to label `feasible`. #180 made that the opt-in: `--option pdhg_stop_at_request=true` waives the dual, gap and complementarity halves of the standard - absolute primal feasibility is kept, so `feasible` still means a feasible point - and reports the point as `feasible` unless it meets the full standard anyway. Measured on these instances at 1e-4 it costs 0.85x the iterations (`bench/results/pdhg-stop-at-request-f18d4b0.csv`) and turns `share2b` from an iteration limit into a usable point at 807,760. The two tolerance columns stay identical on `adlittle`, `israel` and `sc50b` even with the switch on, because on those the kept primal clause is what binds.
+**Read the two tolerance columns together, because they are the same run.** Since #179 the loop stops only where the absolute standard is met, so a request looser than that standard no longer stops the solve any earlier - ask for 1e-4 and you get the 1e-8 point, at the 1e-8 cost. That is the honest reading of the identical columns below, and it is a real trade: the old behaviour honoured a loose request and returned a point it then had to label `feasible`. #180 made that the opt-in: `--option pdhg_stop_at_request=true` waives the dual, gap and complementarity halves of the standard - absolute primal feasibility is kept, so `feasible` still means a feasible point - and reports the point as `feasible` unless it meets the full standard anyway. Measured on these instances at 1e-4 it costs 0.85x the iterations (`bench/results/pdhg-stop-at-request-02cd92c.csv`) and turns `share2b` from an iteration limit into a usable point at 807,760. The two tolerance columns stay identical on `adlittle`, `israel` and `sc50b` even with the switch on, because on those the kept primal clause is what binds.
 
 | instance | simplex | PDHG 0.0001: objective / iterations | PDHG 1e-08: objective / iterations |
 |---|---:|---:|---:|
@@ -336,8 +336,8 @@ A ratio above 1 means restarts saved iterations on that instance.
 Every tier above is Netlib-sized: the largest instance in the full set has 12,230 columns, and
 most have a few hundred, so none of them speaks to the size PS26119 asks about.
 
-Source CSV: `bench/results/scale-41eddbf.csv`  
-Commit `41eddbf` · machine `Windows-AMD64` · 120.0s per solve
+Source CSV: `bench/results/scale-f545f83.csv`  
+Commit `f545f83` · machine `Windows-AMD64` · 120.0s per solve
 
 PS26119 asks for **thousands to millions of variables**, and this is the section that answers it with a file rather than an adjective. The instances are generated backwards from a primal-dual pair that already satisfies the KKT conditions, from integer data, so the optimum is known EXACTLY before the solver sees the model (`bench/runners/generate_large_lp.py`). A large random instance would prove nothing: nobody would know whether the answer was right.
 
@@ -370,8 +370,8 @@ PS26119 asks for **thousands to millions of variables**, and this is the section
 
 #### 1f.1 The same question without the clock
 
-Source CSV: `bench/results/scale-iterations-f7ca7e9.csv`  
-Commit `f7ca7e9` · machine `Windows-AMD64` · **1000 iterations per solve**, not a clock
+Source CSV: `bench/results/scale-iterations-bf3df02.csv`  
+Commit `bf3df02` · machine `Windows-AMD64` · **1000 iterations per solve**, not a clock
 
 **This is the one measurement on this page another machine reproduces exactly.** Every other timing here is partly a property of this laptop: a machine at half speed does half the iterations inside a time limit and lands further from the optimum, so the same solver looks worse. Fixing the iteration count removes the machine, and what is left is a property of the algorithm.
 
@@ -407,8 +407,8 @@ Only the first-order method is measured here, and deliberately. The simplex and 
 
 #### 1f.2 The same sizes on a second shape
 
-Source CSV: `bench/results/scale-staircase-f7ca7e9.csv`  
-Commit `f7ca7e9` · machine `Windows-AMD64` · 120.0s per solve · staircase structure
+Source CSV: `bench/results/scale-staircase-bf3df02.csv`  
+Commit `bf3df02` · machine `Windows-AMD64` · 120.0s per solve · staircase structure
 
 **Same construction, same sizes, same nonzeros per column, different pattern.** The random family above draws each column's rows uniformly, which makes an expander graph: no small separators, so every elimination ordering fills catastrophically. That is the worst case for a method that factorizes and it looks nothing like an industrial model. This family is a staircase, each column in its own period with one coupling into the next - a multi-period planning model, which is the shape PS26119's own domain produces. The optimum is exact by construction either way.
 
@@ -435,14 +435,14 @@ Commit `f7ca7e9` · machine `Windows-AMD64` · 120.0s per solve · staircase str
 | `ipm` | 5,000 | 20,000 |
 | `pdhg` | 100,000 | 100,000 |
 
-**Structure is what a direct method needs, and the table shows it:** `ipm` from 5,000 to 20,000. The two families were measured at different commits - random at `41eddbf`, staircase at `f7ca7e9` - so the solver is not identical between them; each table stands on its own commit, and the comparison is of shapes, not of versions. What changed between the shapes is whether the matrix has small separators, and the measurements behind that - the ordering time and the fill in the factor at the same size on both shapes - are in #193. The lesson for the section above is that its random family is a fair test of the first-order engine and an unfair one of the other two.
+**Structure is what a direct method needs, and the table shows it:** `ipm` from 5,000 to 20,000. The two families were measured at different commits - random at `f545f83`, staircase at `bf3df02` - so the solver is not identical between them; each table stands on its own commit, and the comparison is of shapes, not of versions. What changed between the shapes is whether the matrix has small separators, and the measurements behind that - the ordering time and the fill in the factor at the same size on both shapes - are in #193. The lesson for the section above is that its random family is a fair test of the first-order engine and an unfair one of the other two.
 
-The 20,000-row `ipm` row is the one to read against the first measurement of this family, `bench/results/scale-staircase-bb4eefa.csv`, where it was a numerical failure after 300 iterations. Running that row is what found the defect fixed in #205 - the method had converged to a relative gap of 1e-7 and then iterated on a NaN that overwrote the answer - and here it reports feasible at a relative error of 1.4e-08 in 27 iterations. Same instance, same hash; the stopping rule is what changed.
+The 20,000-row `ipm` row is the one to read against the first measurement of this family, `bench/results/scale-staircase-81596a3.csv`, where it was a numerical failure after 300 iterations. Running that row is what found the defect fixed in #205 - the method had converged to a relative gap of 1e-7 and then iterated on a NaN that overwrote the answer - and here it reports feasible at a relative error of 1.4e-08 in 27 iterations. Same instance, same hash; the stopping rule is what changed.
 
 #### 1f.3 A refinery planning model, by the year
 
-Source CSV: `bench/results/scale-refinery-41eddbf.csv`  
-Commit `41eddbf` · machine `Windows-AMD64` · 120.0s per solve · refinery structure
+Source CSV: `bench/results/scale-refinery-f545f83.csv`  
+Commit `f545f83` · machine `Windows-AMD64` · 120.0s per solve · refinery structure
 
 **A refinery planning model, rolled out over T periods** (`bench/runners/generate_refinery_lp.py`, #211): crude purchases, distillation throughput and crude tanks per crude; production by yields, sales and product tanks per product; distillation and unit capacities, quality budgets and delivery commitments per period; inventory balances coupling each period to the next. The operating plan is chosen first and the prices derived from the KKT conditions, so the optimum is exact by construction, as for the other two families. Rows are what the generator built - T = 12 is a monthly year, 365 a daily one, 8,760 hourly.
 
@@ -467,15 +467,15 @@ Commit `41eddbf` · machine `Windows-AMD64` · 120.0s per solve · refinery stru
 The LP tiers above say nothing about the branch and bound. This is the MILP evidence, and it
 is a harder library: MIPLIB instances are chosen to be difficult for mature solvers.
 
-Source CSV: `bench/results/miplib-f7ca7e9.csv`  
-Commit `f7ca7e9` · machine `Windows-AMD64`
+Source CSV: `bench/results/miplib-bf3df02.csv`  
+Commit `bf3df02` · machine `Windows-AMD64`
 
 **13 of 30** instances reached the published optimum. **9 of 30** also PROVED it - closed the bound to within the requested gap target rather than stopping at a node or time limit.
 
 Every row above was counted under the #188 convention: a search that meets the requested gap target reports `optimal`, because the incumbent is within the tolerance that was asked for. Only a node or time limit leaves a row unproved.
 Those are different claims and are kept apart deliberately. Branch and bound here finds good incumbents far more often than it finishes the proof: reliability branching (#69) and warm-started dual node LPs (#65) do the searching, and the root cutting planes that exist (#159: Gomory mixed-integer and lifted knapsack cover) are off by default, for the reason measured below. Collapsing the two columns would hide exactly the thing cuts are meant to improve.
 
-**Root cuts, on versus off** (`bench/results/miplib-cuts-off.csv` and `miplib-cuts-on.csv`, both at `f7ca7e9`, 30 instances, the same time limit): with cuts on, 12 of 30 reach the published optimum and 9 prove it, against 13 and 9 with them off. Over the 30 instances that end the same way either way, the cuts take the total node count to 0.918x (per instance from 0.082x to 1.539x). The outcome changed on 0: none. Both counts above are recomputed under #188, where a search meeting its gap target is optimal; the CSVs predate that and their own `proved_optimal` column would read 9 and 9, which is where the claim that the cuts cost TWO proofs came from. One of those two was only a renamed status: `f2gap40400` met the gap target in 321 nodes with cuts against 509 without, which is the cuts working. The genuine loss is `enlight8`, which proves its optimum in 53.5 s without them and runs out of the 60 s limit with them, because a cut row makes every node LP dearer. That single lost proof, against a node count of 0.918x, is why `enable_root_cuts` is off by default: a measurement, not caution.
+**Root cuts, on versus off** (`bench/results/miplib-cuts-off.csv` and `miplib-cuts-on.csv`, both at `bf3df02`, 30 instances, the same time limit): with cuts on, 12 of 30 reach the published optimum and 9 prove it, against 13 and 9 with them off. Over the 30 instances that end the same way either way, the cuts take the total node count to 0.918x (per instance from 0.082x to 1.539x). The outcome changed on 0: none. Both counts above are recomputed under #188, where a search meeting its gap target is optimal; the CSVs predate that and their own `proved_optimal` column would read 9 and 9, which is where the claim that the cuts cost TWO proofs came from. One of those two was only a renamed status: `f2gap40400` met the gap target in 321 nodes with cuts against 509 without, which is the cuts working. The genuine loss is `enlight8`, which proves its optimum in 53.5 s without them and runs out of the 60 s limit with them, because a cut row makes every node LP dearer. That single lost proof, against a node count of 0.918x, is why `enable_root_cuts` is off by default: a measurement, not caution.
 
 **The time limit decides some of these, not the solver.** A row that stops at the limit with a small gap says "needs more time than we gave it", not "cannot"; which side of the limit such a row lands on moves with the machine's speed rather than with anything about the search. The remedy is a longer limit, and the reason this table does not already use one is that the set already adds up to 21 minutes of solve time per run at this one.
 
@@ -547,8 +547,8 @@ demo set. Comparing only where we pass would be the easy version of this table a
 nothing: the instances we fail are exactly the ones a reader should want to see against a
 mature solver.
 
-Source CSV: `bench/results/compare-highs-medium-f7ca7e9-third.csv`  
-Commit `f7ca7e9` · machine `Windows-AMD64`
+Source CSV: `bench/results/compare-highs-medium-bf3df02-third.csv`  
+Commit `bf3df02` · machine `Windows-AMD64`
 
 **50 of 50** instances where the two solvers agree on the objective.
 
@@ -631,7 +631,7 @@ certificate, moves. The reduced version runs in CI (`tests/robustness/`), togeth
 adversarial families judged by the exact rational oracle and the classic cycling examples
 of Beale and Kuhn.
 
-Measured on commit `53cbe16` (Windows-AMD64), 192 solves, 5 families. Source: `robustness-53cbe16.csv`.
+Measured on commit `2b4eb6b` (Windows-AMD64), 192 solves, 5 families. Source: `robustness-2b4eb6b.csv`.
 
 | family | parameter | last k that passed on every instance | first k that failed | what failed |
 |---|---|---|---|---|

@@ -126,7 +126,7 @@ rule "Where we are honest about the gaps"
 cat <<'NOTES'
     - These are the small end of Netlib. Nothing here supports a claim about large models.
     - Against HiGHS we agree on the objective on all 8 instances and are roughly 2x
-      slower on the median - 2.4x measured on commit a2f4bbe. We publish that rather
+      slower on the median - 2.4x measured on commit 498bed3. We publish that rather
       than hide it: the problem statement asks us to compare, not to win, and HiGHS is
       a decade of specialist work. demo/run_sih_demo.sh section 5 re-measures the
       comparison live, rather than quoting this line.

@@ -5,7 +5,7 @@
 WHY NOT THE OBVIOUS THINGS. Two of them were tried here and both are wrong:
 
   Sorting by FILENAME sorts the commit sha as text, which is meaningless. It put
-  `netlib-medium-e71ad03.csv` after `netlib-medium-a90db47.csv` purely because `e` follows
+  `netlib-medium-5fa6acc.csv` after `netlib-medium-f3b4c02.csv` purely because `e` follows
   `a`, so the demo reported 40/50 from a superseded run when the current one said 41/50.
 
   Sorting by MODIFICATION TIME is right on the machine that produced the files and wrong

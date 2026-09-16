@@ -144,7 +144,7 @@ def default_out(commit: str, args) -> Path:
     scale-<commit>.csv is the timed random family and scale-<structure>-<commit>.csv the timed
     structured one; a FIXED-ITERATION run is a different measurement and must not be mistaken
     for either. The first re-measurement after #229 wrote its 1,000-iteration rows to
-    scale-79ec7f7.csv, which the generator would have rendered as the 120-second table. So
+    scale-4177ae6.csv, which the generator would have rendered as the 120-second table. So
     an iteration-limited run is named scale-iterations-..., which is the glob section 1f.1
     reads, with the structure in the name when it is not random.
     """
