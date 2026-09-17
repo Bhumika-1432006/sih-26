@@ -49,9 +49,13 @@ Options pdhg_regression_options(bool gpu) {
   // different code path.  Disabled here so the comparison is purely between the two
   // first-order engines.
   o.set_bool("pdhg_polish", false);
-  // 1e-8: the tighter of the two project-standard tolerances (ENGINEERING_RULES.md).
-  // Both engines converge to this tolerance so their objectives are accurate to ~1e-8;
-  // the 1e-9 agreement check is ~10x looser, giving comfortable headroom for FP reordering.
+  // 1e-8: the tighter of the two project-standard tolerances (ENGINEERING_RULES.md). Note
+  // that kAgreementTol = 1e-9 is TIGHTER than this stopping tolerance, not looser: the two
+  // runs are expected to take the same iterates (same restarts, same step sizes) and differ
+  // only by floating-point reordering inside each mat-vec, so their final objectives should
+  // agree far below the stopping tolerance. If the CUDA path ever takes a different
+  // trajectory (a restart decided differently by a 1-ulp change), this test says so, and
+  // the right response is to understand why, not to loosen kAgreementTol.
   o.set_double("pdhg_tolerance", 1e-8);
   // Netlib small instances need up to ~200k iterations at 1e-4 (adlittle, test_pdhg.cpp).
   // At 1e-8 the count is higher; 1e6 is the budget here.
@@ -82,7 +86,11 @@ TEST(PdhgCudaRegression, NineNetlibInstancesAgreeToOnePart1e9) {
   const io::ReadResult probe_read = io::read_model(probe_path, &probe_model);
   ASSERT_TRUE(probe_read.ok) << probe_path << ": " << probe_read.error
                              << " (instance is committed; a failure here means the file moved)";
-  const Solution probe = solve(probe_model, pdhg_regression_options(/*gpu=*/true));
+  // One iteration is enough to learn which engine ran; a full solve at 1e-8 here would
+  // cost every CPU-only CI run a solve it then throws away.
+  Options probe_options = pdhg_regression_options(/*gpu=*/true);
+  probe_options.set_int("iteration_limit", 1);
+  const Solution probe = solve(probe_model, probe_options);
   if (!cuda_was_used(probe)) {
     GTEST_SKIP() << "CUDA backend not in this build (gpu=true ran as \"" << probe.algorithm
                  << "\"): skipped, not passed.  Depends on #16 and #17.";
