@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: Apache-2.0
+// SANKHYA - GPU device probe.
+//
+// Intentionally thin: enumerate devices, pick device 0, report name and memory.
+// No allocation, no kernel launch, no transfer. Compiled only when
+// SANKHYA_ENABLE_CUDA is ON; the guard lives in CMakeLists.txt.
+
+#include "device.hpp"
+
+#include <cuda_runtime.h>
+
+#include <cstdio>
+#include <string>
+
+namespace sankhya::gpu {
+
+bool device_available(std::string* description) {
+  int count = 0;
+  if (cudaGetDeviceCount(&count) != cudaSuccess || count == 0) {
+    if (description) *description = "no CUDA device found";
+    return false;
+  }
+  cudaDeviceProp prop{};
+  if (cudaGetDeviceProperties(&prop, 0) != cudaSuccess) {
+    if (description) *description = "cudaGetDeviceProperties failed";
+    return false;
+  }
+  if (description) {
+    char buf[256];
+    std::snprintf(buf, sizeof(buf), "%s (compute %d.%d, %.0f MiB VRAM)", prop.name, prop.major,
+                  prop.minor,
+                  static_cast<double>(prop.totalGlobalMem) / (1024.0 * 1024.0));
+    *description = buf;
+  }
+  return true;
+}
+
+}  // namespace sankhya::gpu

@@ -240,6 +240,16 @@ target_compile_definitions(sankhya_objects PRIVATE
 
 if(SANKHYA_ENABLE_CUDA)
   enable_language(CUDA)
+  # Ada Lovelace (RTX 40xx, compute 8.9). PTX is forward-compatible, so a newer GPU
+  # runs this binary without recompilation; a pre-Ada GPU does not.
+  set(CMAKE_CUDA_ARCHITECTURES 89)
+  find_package(CUDAToolkit REQUIRED)
+  # Collect every .cu file under src/gpu/ so adding a new kernel needs no CMake edit.
+  file(GLOB SANKHYA_GPU_SOURCES "src/gpu/*.cu")
+  target_sources(sankhya_objects PRIVATE ${SANKHYA_GPU_SOURCES})
+  # cuSPARSE supplies SpMV on device — matrix arithmetic, not an optimisation algorithm.
+  # See docs/PROVENANCE.md section 2.
+  target_link_libraries(sankhya_objects PRIVATE CUDA::cusparse CUDA::cudart)
   target_compile_definitions(sankhya_objects PUBLIC SANKHYA_ENABLE_CUDA)
 endif()
 

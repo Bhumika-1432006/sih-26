@@ -7,6 +7,10 @@
 
 #include <fmt/format.h>
 
+#ifdef SANKHYA_ENABLE_CUDA
+#include "gpu/device.hpp"
+#endif
+
 #ifndef SANKHYA_VERSION
 #define SANKHYA_VERSION "0.0.0-unconfigured"
 #endif
@@ -43,10 +47,22 @@ bool cuda_enabled() noexcept {
 #endif
 }
 
+const char* cuda_device_description() noexcept {
+#ifdef SANKHYA_ENABLE_CUDA
+  static const std::string desc = []() -> std::string {
+    std::string d;
+    return gpu::device_available(&d) ? d : std::string("no device: ") + d;
+  }();
+  return desc.c_str();
+#else
+  return "none (CUDA not compiled in)";
+#endif
+}
+
 const char* banner() noexcept {
-  static const std::string text =
-      fmt::format("SANKHYA {} ({}, {}, {}, CUDA {})", version_string(), git_commit(),
-                  build_type(), compiler_string(), cuda_enabled() ? "on" : "off");
+  static const std::string text = fmt::format(
+      "SANKHYA {} ({}, {}, {}, CUDA {}, GPU {})", version_string(), git_commit(), build_type(),
+      compiler_string(), cuda_enabled() ? "on" : "off", cuda_device_description());
   return text.c_str();
 }
 
