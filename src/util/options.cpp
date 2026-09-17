@@ -312,6 +312,52 @@ const std::vector<OptionSpec>& Options::registry() {
                  0.0,
                  kNoLimit,
                  {}});
+    // ---- Solution pool (#225) ----
+    s.push_back({"pool_size",
+                 OptionType::Int,
+                 std::int64_t{10},
+                 "MILP/MIQP: how many integer-feasible solutions with different integer "
+                 "assignments to keep and report, best first; 0 keeps none.",
+                 0.0,
+                 1e6,
+                 {}});
+    s.push_back({"pool_gap",
+                 OptionType::Double,
+                 kNoLimit,
+                 "MILP/MIQP: report only pool members whose objective is within this relative "
+                 "gap of the solution (relative to max(1, |objective|)); default keeps all.",
+                 0.0,
+                 kNoLimit,
+                 {}});
+    s.push_back({"pool_diversity",
+                 OptionType::Bool,
+                 false,
+                 "MILP/MIQP: when the pool is full, drop the member nearest the others in "
+                 "Hamming distance on the integer assignment instead of the worst one.",
+                 0.0,
+                 0.0,
+                 {}});
+    s.push_back({"pool_complete",
+                 OptionType::Bool,
+                 false,
+                 "MILP/MIQP: keep searching past the optimum until the pool provably holds "
+                 "the pool_size best assignments (within pool_gap). Costs nodes; off by "
+                 "default, which reports only what the ordinary search found. With "
+                 "pool_diversity on it cannot prune and enumerates every integer-feasible "
+                 "assignment, so combine the two only on small models or with pool_gap.",
+                 0.0,
+                 0.0,
+                 {}});
+    s.push_back({"pool_write_all_columns",
+                 OptionType::Bool,
+                 false,
+                 "MILP/MIQP: write every column of each pool member to the .sol file, not "
+                 "only the integer ones, so tools/verify_solution.py can check every row of "
+                 "every member exactly. Off by default because on a large model the pool "
+                 "section would repeat the whole point pool_size times.",
+                 0.0,
+                 0.0,
+                 {}});
     s.push_back({"pdhg_restart",
                  OptionType::Bool,
                  true,

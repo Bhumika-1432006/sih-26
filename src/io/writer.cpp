@@ -288,6 +288,36 @@ bool write_solution(const std::string& path, const Model& model, const Solution&
   }
   fmt::print(out, "end rows\n");
 
+  // The solution pool (#225). By default INTEGER COLUMNS ONLY: the continuous values follow
+  // from re-solving the LP with the integers fixed, and ten full vectors of a 100,000-column
+  // model is a file nobody reads. `pool_write_all_columns` writes every column, so the
+  // verifier can check each member's rows exactly. The first member is the solution above.
+  if (!solution.pool.empty() && claims_a_point(solution.status)) {
+    const bool all_columns = options.get_bool("pool_write_all_columns");
+    std::vector<Index> integers;
+    for (Index j = 0; j < n; ++j) {
+      if (all_columns || model.col_type[static_cast<std::size_t>(j)] == VarType::kInteger)
+        integers.push_back(j);
+    }
+    fmt::print(out,
+               "\n# Solution pool (#225): integer-feasible solutions with different integer\n"
+               "# assignments, the one above first and the rest best first. {}\n"
+               "# solution rank objective, then: name value\n",
+               all_columns ? "Every column is written (pool_write_all_columns)."
+                           : "Only the integer\n# columns are written; the continuous ones "
+                             "follow from the LP with these fixed.");
+    fmt::print(out, "begin pool {} {}\n", solution.pool.size(), integers.size());
+    for (std::size_t k = 0; k < solution.pool.size(); ++k) {
+      const Solution::PoolEntry& member = solution.pool[k];
+      fmt::print(out, "solution {} {}\n", k + 1, exact(member.objective));
+      for (const Index j : integers) {
+        fmt::print(out, "{} {}\n", quoted_name(column_name(model, j)),
+                   exact(value_or(member.col_value, j)));
+      }
+    }
+    fmt::print(out, "end pool\n");
+  }
+
   // Sensitivity ranging: objective and RHS intervals for each column and row.
   if (!solution.col_ranging_lower.empty() &&
       solution.col_ranging_lower.size() == static_cast<std::size_t>(n) &&
