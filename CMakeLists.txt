@@ -144,16 +144,16 @@ add_library(sankhya_flags INTERFACE)
 if(MSVC)
   target_compile_options(sankhya_flags INTERFACE /W4 /WX /permissive- /Zc:__cplusplus)
 else()
+  set(SANKHYA_GCC_WARNINGS
+    -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion -Wcast-qual
+    -Wdouble-promotion -Wnon-virtual-dtor -Woverloaded-virtual -Wnull-dereference)
   target_compile_options(sankhya_flags INTERFACE
-    -Wall -Wextra -Werror
-    -Wshadow
-    -Wconversion
-    -Wsign-conversion
-    -Wcast-qual
-    -Wdouble-promotion
-    -Wnon-virtual-dtor
-    -Woverloaded-virtual
-    -Wnull-dereference)
+    "$<$<COMPILE_LANGUAGE:CXX>:${SANKHYA_GCC_WARNINGS}>")
+  if(SANKHYA_ENABLE_CUDA)
+    # nvcc treats -W* as its own options; hand them to the host compiler instead.
+    target_compile_options(sankhya_flags INTERFACE
+      "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra,-Werror>")
+  endif()
 endif()
 
 if(MINGW)
