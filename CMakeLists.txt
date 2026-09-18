@@ -213,6 +213,7 @@ set(SANKHYA_CORE_SOURCES
   src/presolve/presolve.cpp
   src/ipm/ipm.cpp
   src/pdhg/pdhg.cpp
+  src/gpu/gpu_memory.cpp
   src/simplex/dual_simplex.cpp
   src/simplex/primal_simplex.cpp
   src/simplex/crossover.cpp
