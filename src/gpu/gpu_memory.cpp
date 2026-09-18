@@ -46,9 +46,9 @@ std::size_t estimate_pdhg_gpu_memory(Index rows, Index cols, Count nonzeros) {
 
 std::size_t vram_reserve(std::size_t total_bytes) {
   // Reserve the larger of 10 % of total VRAM or 256 MiB so that the runtime, other
-  // processes, and allocation fragmentation have headroom (scale-e134aeb.csv: the RTX 4050
-  // Laptop GPU has 6144 MiB; 10 % = 614 MiB, which is also the headroom used in
-  // docs/BENCHMARKS.md 1f for CUDA runs on the primary test machine).
+  // processes, and allocation fragmentation have headroom. On a 6144 MiB card (the RTX 4050
+  // Laptop GPU the team has) that is 614 MiB. The policy is a choice, not a measurement: no
+  // CUDA run has been recorded in bench/results/ yet (#19 is that measurement).
   constexpr std::size_t kMinReserve = 256ULL * 1024 * 1024;  // 256 MiB
   return std::max(kMinReserve, total_bytes / 10);
 }
