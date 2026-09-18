@@ -678,12 +678,16 @@ Solution solve_unguarded(const Model& model, const Options& options, SolveContro
         const std::size_t reserve = gpu::vram_reserve(total_bytes);
         logger.info(
             "GPU PDHG memory: required {:.0f} MiB, available {:.0f} MiB, reserve {:.0f} MiB",
-            required / 1048576.0, free_bytes / 1048576.0, reserve / 1048576.0);
+            static_cast<double>(required) / 1048576.0,
+            static_cast<double>(free_bytes) / 1048576.0,
+            static_cast<double>(reserve) / 1048576.0);
         if (required + reserve > free_bytes) {
           logger.warning(
               "GPU PDHG: estimated {:.0f} MiB + {:.0f} MiB reserve exceeds {:.0f} MiB free "
               "VRAM; falling back to CPU PDHG",
-              required / 1048576.0, reserve / 1048576.0, free_bytes / 1048576.0);
+              static_cast<double>(required) / 1048576.0,
+              static_cast<double>(reserve) / 1048576.0,
+              static_cast<double>(free_bytes) / 1048576.0);
           use_gpu_pdhg = false;
         }
       }
