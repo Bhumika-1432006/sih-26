@@ -26,7 +26,7 @@ bool device_available(std::string* description) {
     return false;
   }
   if (description) {
-    char buf[256];
+    char buf[512];  // prop.name is char[256]; suffix adds ~40 chars
     std::snprintf(buf, sizeof(buf), "%s (compute %d.%d, %.0f MiB VRAM)", prop.name, prop.major,
                   prop.minor,
                   static_cast<double>(prop.totalGlobalMem) / (1024.0 * 1024.0));
