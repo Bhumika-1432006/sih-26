@@ -21,7 +21,9 @@
 #ifdef SANKHYA_ENABLE_CUDA
 #include "gpu/device.hpp"
 #include "gpu/gpu_memory.hpp"
+#include "gpu/multi_device.hpp"
 #include "gpu/pdhg_gpu.hpp"
+#include "gpu/pdhg_multi_gpu.hpp"
 #endif
 
 #include <fmt/format.h>
@@ -784,9 +786,15 @@ Solution solve_unguarded(const Model& model, const Options& options, SolveContro
 #ifdef SANKHYA_ENABLE_CUDA
         if (use_gpu_pdhg) {
           // GPU path: auto-routed by size:pdhg-gpu, or explicit --gpu flag (both gated by the
-          // VRAM check above). solve_pdhg_gpu probes the device itself and falls back to CPU
-          // when absent.
-          Solution first = gpu::solve_pdhg_gpu(target, first_pass, logger, control);
+          // VRAM check above). Multi-GPU when gpu_devices names more than one device (#295).
+          const std::vector<int> gpu_dev_ids =
+              gpu::parse_device_ids(options.get_string("gpu_devices"));
+          Solution first;
+          if (gpu_dev_ids.size() > 1) {
+            first = gpu::solve_pdhg_multi_gpu(target, first_pass, gpu_dev_ids, logger, control);
+          } else {
+            first = gpu::solve_pdhg_gpu(target, first_pass, logger, control);
+          }
           polish_with_the_interior_point(&first, target, options, logger, control, timer);
           return first;
         }
