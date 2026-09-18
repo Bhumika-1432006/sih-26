@@ -555,6 +555,11 @@ Solution BranchAndBound::run() {
                to_string(solution.status), solution.objective, solution.dual_bound,
                solution.nodes, solution.solve_seconds);
   logger_.info("Nodes pruned {}, tree {} node(s) at exit", nodes_pruned_, open_.size());
+  if (clique_cuts_generated_ + zero_half_cuts_generated_ > 0) {
+    logger_.info(
+        "Combinatorial cut candidates (#358): {} clique, {} zero-half, before the filter",
+        clique_cuts_generated_, zero_half_cuts_generated_);
+  }
   if (Profiler* profiler = logger_.profiler(); profiler != nullptr) {
     profiler->count("nodes pruned", static_cast<std::int64_t>(nodes_pruned_));
     profiler->count("warm-started node LPs", static_cast<std::int64_t>(warm_node_solves_));
