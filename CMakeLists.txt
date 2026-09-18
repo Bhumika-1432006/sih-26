@@ -250,8 +250,12 @@ target_compile_definitions(sankhya_objects PRIVATE
 if(SANKHYA_ENABLE_CUDA)
   # Must be set before enable_language(CUDA): CMake reads CMAKE_CUDA_ARCHITECTURES
   # when it first configures the toolchain; setting it after has no effect on existing
-  # targets.  Ada Lovelace (RTX 40xx, compute 8.9); PTX is forward-compatible.
-  set(CMAKE_CUDA_ARCHITECTURES 75 86 89)
+  # targets.
+  # Defaults: Turing (7.5), Ampere (8.6), Ada Lovelace (8.9). PTX for 8.9 is emitted for
+  # forward compatibility. Override via -DSANKHYA_CUDA_ARCHITECTURES="75;86;89;90".
+  set(SANKHYA_CUDA_ARCHITECTURES "75;86;89" CACHE STRING
+    "Semicolon-separated CUDA compute capabilities to compile (e.g. \"75;86;89\" or \"all-major\")")
+  set(CMAKE_CUDA_ARCHITECTURES ${SANKHYA_CUDA_ARCHITECTURES})
   # C++17 is the highest standard that CMake 3.22/nvcc map reliably without probing
   # for cuda_std_20 compile features (which CMake 3.22 may not emit for all nvcc
   # versions).  Our .cu files use no C++20-only constructs.
@@ -265,7 +269,7 @@ if(SANKHYA_ENABLE_CUDA)
   # Explicitly pin arch and standard on the target: sankhya_objects was created before
   # CUDA was enabled so it may have inherited the project-wide C++20 requirement.
   # The global CMAKE_CUDA_STANDARD only applies to targets created after it is set.
-  set_property(TARGET sankhya_objects PROPERTY CUDA_ARCHITECTURES 75 86 89)
+  set_property(TARGET sankhya_objects PROPERTY CUDA_ARCHITECTURES ${SANKHYA_CUDA_ARCHITECTURES})
   set_property(TARGET sankhya_objects PROPERTY CUDA_STANDARD 17)
   set_property(TARGET sankhya_objects PROPERTY CUDA_STANDARD_REQUIRED ON)
   # cuSPARSE supplies SpMV on device — matrix arithmetic, not an optimisation algorithm.
@@ -333,6 +337,9 @@ message(STATUS "SANKHYA ${PROJECT_VERSION} (${SANKHYA_GIT_COMMIT})")
 message(STATUS "  build type : ${CMAKE_BUILD_TYPE}")
 message(STATUS "  compiler   : ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 message(STATUS "  CUDA       : ${SANKHYA_ENABLE_CUDA}")
+if(SANKHYA_ENABLE_CUDA)
+  message(STATUS "  CUDA archs : ${SANKHYA_CUDA_ARCHITECTURES}")
+endif()
 message(STATUS "  sanitizers : ${SANKHYA_SANITIZE}")
 message(STATUS "  tests      : ${SANKHYA_BUILD_TESTS}")
 message(STATUS "  zlib       : ${SANKHYA_WITH_ZLIB}")

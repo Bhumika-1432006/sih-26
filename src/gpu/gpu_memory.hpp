@@ -12,6 +12,11 @@
 
 namespace sankhya::gpu {
 
+/// Minimum NVIDIA compute capability supported by this SANKHYA CUDA build.
+/// Matches the lowest entry in SANKHYA_CUDA_ARCHITECTURES (default 75 = Turing sm_75).
+/// Update if the CMakeLists.txt default architecture list changes.
+inline constexpr int kMinComputeArch = 75;  // major*10 + minor
+
 /// Estimate the peak device-side bytes required to run GPU PDHG on a model with the given
 /// dimensions. The calculation accounts for:
 ///   - 10 n-element double vectors (primal iterates, sums, scratch, cost, column bounds)
@@ -23,6 +28,11 @@ namespace sankhya::gpu {
 /// The constant overheads are chosen to be safe across the architecture range (sm_75–sm_89).
 /// The function is intentionally conservative; a model near the limit may succeed in practice.
 [[nodiscard]] std::size_t estimate_pdhg_gpu_memory(Index rows, Index cols, Count nonzeros);
+
+/// Return true when a device with the given compute capability (major.minor) meets the
+/// minimum architecture compiled into this build (kMinComputeArch).
+/// Pure arithmetic — no CUDA calls — so safe to call from CPU-only translation units.
+[[nodiscard]] bool is_supported_compute_capability(int major, int minor) noexcept;
 
 /// The safety reserve applied to free VRAM before comparing with the estimate.
 /// Defined as max(10% of total VRAM, 256 MiB). Kept here so tests can match the policy.
