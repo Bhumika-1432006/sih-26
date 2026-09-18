@@ -64,10 +64,12 @@ TEST(GpuMemory, SmallModelFormula) {
 }
 
 TEST(GpuMemory, LargeModelIsInMibRange) {
-  // 100k rows, 200k cols, 1M nonzeros should be several GiB.
+  // 100k rows, 200k cols, 1M nonzeros: sparse storage ≈ 50 MiB (not GiB — the matrix is
+  // sparse). n-vecs: 10*200k*8=16 MiB; m-vecs: 9*100k*8=7.2 MiB; CSR: ~12 MiB; 16 MiB
+  // overhead. The estimate must exceed 40 MiB, well above the 16 MiB overhead constant alone.
   const std::size_t est = estimate_pdhg_gpu_memory(100000, 200000, 1000000);
-  constexpr std::size_t kOneGib = 1024ULL * 1024 * 1024;
-  EXPECT_GT(est, kOneGib);
+  constexpr std::size_t k40Mib = 40ULL * 1024 * 1024;
+  EXPECT_GT(est, k40Mib);
 }
 
 // ---- vram_reserve -----------------------------------------------------------
