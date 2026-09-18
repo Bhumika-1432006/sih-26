@@ -36,7 +36,9 @@ Every dependency is a general-purpose library. None of them solves an optimizati
 | **OpenMP runtime** (libgomp with GCC, libomp with Clang) | as shipped by the compiler | GPL-3.0 with the GCC Runtime Library Exception / Apache-2.0 with LLVM exception | optional, found by CMake | The compiler's own thread runtime for `#pragma omp parallel for`. Schedules loops; contains no numerical code of any kind. |
 | **zlib** | 1.3.1 | zlib | yes, static | DEFLATE decompression, for `.mps.gz` inputs (Phase 2). |
 | **GoogleTest** | 1.14.0 | BSD-3-Clause | test binary only | Unit test framework. Never linked into `sankhya_core`. |
-| **cuSPARSE / cuBLAS** | as shipped with CUDA Toolkit | NVIDIA SDK Licence | yes, when `SANKHYA_ENABLE_CUDA=ON` | Sparse matrix-vector products and dense linear algebra on GPU. These supply arithmetic primitives (SpMV, GEMV), not an optimisation algorithm. SANKHYA's PDHG iteration is written from [CP11] and [PDLP]; cuSPARSE provides the matrix-vector multiply that the iteration calls, in the same way that a BLAS supplies `dgemv` to a simplex without being a simplex. |
+| **CUDA runtime (cudart)** | as shipped with CUDA Toolkit | NVIDIA SDK Licence | yes, when `SANKHYA_ENABLE_CUDA=ON` | Device enumeration and the probe in `src/gpu/device.cu`. No kernel launch, no transfer. |
+| **cuSPARSE** | as shipped with CUDA Toolkit | NVIDIA SDK Licence | yes, when `SANKHYA_ENABLE_CUDA=ON` | Sparse matrix-vector products on GPU (`cusparseSpMV`). Supplies the A x and A^T y arithmetic primitives called by the GPU PDHG iteration in `src/gpu/pdhg_gpu.cu` (#17), in the same way that a BLAS supplies `dgemv` to a simplex without being a simplex. Not an optimisation algorithm. |
+| **cuBLAS** | as shipped with CUDA Toolkit | NVIDIA SDK Licence | **not linked** | Dense linear algebra on GPU. Not needed by the current GPU backend; listed here so the absence is a decision, not an oversight. |
 | **highspy** | pip, benchmark only | MIT | **never linked** | The HiGHS solver, used ONLY as the comparison baseline in `bench/runners/compare.py`. It runs in a separate Python process, is not a build dependency, and nothing in `src/` knows it exists. Its source does not inform ours - see the red line in section 1. |
 
 Considered, and not present. Each was allowed by the policy above; none turned out to be
@@ -45,7 +47,6 @@ needed, and none is linked, vendored or fetched:
 | Dependency | Licence | Status |
 |---|---|---|
 | pybind11 | BSD-3-Clause | Not used. The Python bindings (#59, #129) are `ctypes` over the C API and compile nothing. |
-| cuSPARSE / cuBLAS | NVIDIA SDK | Now in the dependency table above (#16). Provides SpMV and dense kernels — matrix arithmetic, not an optimisation algorithm. |
 | AMD / COLAMD ordering | per-module | Not used as a library. The sparse LDL^T (#70) carries its own ordering, written from the AMD paper (Amestoy, Davis & Duff 1996) for #193 - approximate minimum degree on a quotient graph - with no code from SuiteSparse or anywhere else; the LU orders by Markowitz counts. |
 | Eigen | MPL-2.0 | Not used. `DenseLu` (`src/simplex/dense_lu.cpp`) is the reference oracle the sparse LU is tested against. |
 

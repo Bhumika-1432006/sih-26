@@ -244,7 +244,7 @@ if(SANKHYA_ENABLE_CUDA)
   # Must be set before enable_language(CUDA): CMake reads CMAKE_CUDA_ARCHITECTURES
   # when it first configures the toolchain; setting it after has no effect on existing
   # targets.  Ada Lovelace (RTX 40xx, compute 8.9); PTX is forward-compatible.
-  set(CMAKE_CUDA_ARCHITECTURES 89)
+  set(CMAKE_CUDA_ARCHITECTURES 75 86 89)
   # C++17 is the highest standard that CMake 3.22/nvcc map reliably without probing
   # for cuda_std_20 compile features (which CMake 3.22 may not emit for all nvcc
   # versions).  Our .cu files use no C++20-only constructs.
@@ -258,7 +258,7 @@ if(SANKHYA_ENABLE_CUDA)
   # Explicitly pin arch and standard on the target: sankhya_objects was created before
   # CUDA was enabled so it may have inherited the project-wide C++20 requirement.
   # The global CMAKE_CUDA_STANDARD only applies to targets created after it is set.
-  set_property(TARGET sankhya_objects PROPERTY CUDA_ARCHITECTURES 89)
+  set_property(TARGET sankhya_objects PROPERTY CUDA_ARCHITECTURES 75 86 89)
   set_property(TARGET sankhya_objects PROPERTY CUDA_STANDARD 17)
   set_property(TARGET sankhya_objects PROPERTY CUDA_STANDARD_REQUIRED ON)
   # cuSPARSE supplies SpMV on device — matrix arithmetic, not an optimisation algorithm.
