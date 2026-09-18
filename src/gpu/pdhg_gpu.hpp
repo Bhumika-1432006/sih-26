@@ -16,7 +16,7 @@ namespace sankhya::gpu {
 ///
 /// Falls back transparently to pdhg::solve_pdhg() when no CUDA device is found, so the caller
 /// never needs to probe the device itself.
-[[nodiscard]] Solution solve_pdhg_gpu(const Model& model, const Options& options, Logger& logger,
-                                      SolveControl* control = nullptr);
+[[nodiscard]] Solution solve_pdhg_gpu(const Model& model, const Options& options,
+                                      Logger& logger, SolveControl* control = nullptr);
 
 }  // namespace sankhya::gpu

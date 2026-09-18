@@ -32,6 +32,7 @@
 
 #include <fmt/format.h>
 
+#include "../core/resource_limits.hpp"
 #include "../core/stop_controller.hpp"
 #include "../la/scaling.hpp"
 #include "device.hpp"
@@ -472,9 +473,10 @@ Solution solve_pdhg_gpu(const Model& model, const Options& options, Logger& logg
 
   // ---- Solver parameters -------------------------------------------------
   const double tolerance       = options.get_double("pdhg_tolerance");
-  const double time_limit      = options.get_double("time_limit");
-  const std::int64_t iter_opt  = options.get_int("iteration_limit");
-  const Count iteration_limit  = iter_opt < 0 ? 1000000 : static_cast<Count>(iter_opt);
+  const ResourceLimits limits(options, logger);
+  const Count iteration_limit = limits.iteration_limit() < 0
+                                    ? 1000000
+                                    : static_cast<Count>(limits.iteration_limit());
   const bool use_restarts      = options.get_bool("pdhg_restart");
   const bool stop_at_request   = options.get_bool("pdhg_stop_at_request");
 
@@ -646,7 +648,7 @@ Solution solve_pdhg_gpu(const Model& model, const Options& options, Logger& logg
   std::vector<double> best_x(n, 0.0), best_y(m, 0.0);
 
   bool converged = false, gpu_error = false, logged_table = false;
-  StopController stop(control, timer, time_limit);
+  StopController stop(control, timer, limits);
   SolveStatus stop_status = SolveStatus::kIterationLimit;
 
   while (!gpu_error) {
