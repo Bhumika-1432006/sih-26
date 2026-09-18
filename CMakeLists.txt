@@ -144,16 +144,16 @@ add_library(sankhya_flags INTERFACE)
 if(MSVC)
   target_compile_options(sankhya_flags INTERFACE /W4 /WX /permissive- /Zc:__cplusplus)
 else()
+  set(SANKHYA_GCC_WARNINGS
+    -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion -Wcast-qual
+    -Wdouble-promotion -Wnon-virtual-dtor -Woverloaded-virtual -Wnull-dereference)
   target_compile_options(sankhya_flags INTERFACE
-    -Wall -Wextra -Werror
-    -Wshadow
-    -Wconversion
-    -Wsign-conversion
-    -Wcast-qual
-    -Wdouble-promotion
-    -Wnon-virtual-dtor
-    -Woverloaded-virtual
-    -Wnull-dereference)
+    "$<$<COMPILE_LANGUAGE:CXX>:${SANKHYA_GCC_WARNINGS}>")
+  if(SANKHYA_ENABLE_CUDA)
+    # nvcc treats -W* as its own options; hand them to the host compiler instead.
+    target_compile_options(sankhya_flags INTERFACE
+      "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra,-Werror>")
+  endif()
 endif()
 
 if(MINGW)
@@ -240,7 +240,29 @@ target_compile_definitions(sankhya_objects PRIVATE
   SANKHYA_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 
 if(SANKHYA_ENABLE_CUDA)
+  # Must be set before enable_language(CUDA): CMake reads CMAKE_CUDA_ARCHITECTURES
+  # when it first configures the toolchain; setting it after has no effect on existing
+  # targets.  Ada Lovelace (RTX 40xx, compute 8.9); PTX is forward-compatible.
+  set(CMAKE_CUDA_ARCHITECTURES 89)
+  # C++17 is the highest standard that CMake 3.22/nvcc map reliably without probing
+  # for cuda_std_20 compile features (which CMake 3.22 may not emit for all nvcc
+  # versions).  Our .cu files use no C++20-only constructs.
+  set(CMAKE_CUDA_STANDARD 17)
+  set(CMAKE_CUDA_STANDARD_REQUIRED ON)
   enable_language(CUDA)
+  find_package(CUDAToolkit REQUIRED)
+  # Collect every .cu file under src/gpu/ so adding a new kernel needs no CMake edit.
+  file(GLOB SANKHYA_GPU_SOURCES "src/gpu/*.cu")
+  target_sources(sankhya_objects PRIVATE ${SANKHYA_GPU_SOURCES})
+  # Explicitly pin arch and standard on the target: sankhya_objects was created before
+  # CUDA was enabled so it may have inherited the project-wide C++20 requirement.
+  # The global CMAKE_CUDA_STANDARD only applies to targets created after it is set.
+  set_property(TARGET sankhya_objects PROPERTY CUDA_ARCHITECTURES 89)
+  set_property(TARGET sankhya_objects PROPERTY CUDA_STANDARD 17)
+  set_property(TARGET sankhya_objects PROPERTY CUDA_STANDARD_REQUIRED ON)
+  # cuSPARSE supplies SpMV on device — matrix arithmetic, not an optimisation algorithm.
+  # See docs/PROVENANCE.md section 2.
+  target_link_libraries(sankhya_objects PRIVATE CUDA::cusparse CUDA::cudart)
   target_compile_definitions(sankhya_objects PUBLIC SANKHYA_ENABLE_CUDA)
 endif()
 

@@ -18,6 +18,10 @@
 #include <string_view>
 #include <utility>
 
+#ifdef SANKHYA_ENABLE_CUDA
+#include "gpu/device.hpp"
+#endif
+
 #include <fmt/format.h>
 
 #include "core/iis.hpp"
@@ -690,11 +694,23 @@ Solution solve_unguarded(const Model& model, const Options& options, SolveContro
     }
 
     if (options.get_bool("gpu")) {
-      // Honest fallback, per ENGINEERING_RULES.md: the CPU build must work with zero CUDA
-      // installed, and --gpu must never crash. No CUDA backend is compiled in yet, so say so
-      // once.
+#ifdef SANKHYA_ENABLE_CUDA
+      // CUDA compiled in: probe the device before touching it. If none is found, fall
+      // through to the CPU path below and say why. Kernels land in #17; until then the
+      // CPU engine runs regardless of whether a device is present.
+      std::string device_desc;
+      if (gpu::device_available(&device_desc)) {
+        logger.info("GPU: {} — kernels arrive in #17; solving on CPU until then", device_desc);
+      } else {
+        logger.warning("--gpu requested but no CUDA device is available: {}; running on CPU",
+                       device_desc);
+      }
+#else
+      // Per ENGINEERING_RULES.md: the CPU build works with zero CUDA installed; --gpu
+      // must never crash.
       logger.warning(
           "--gpu requested but this build has no CUDA backend compiled in; running on CPU");
+#endif
     }
 
     // A STARTING BASIS (#218) names the caller's rows and columns, so the engine runs on

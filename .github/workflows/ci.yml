@@ -517,6 +517,36 @@ jobs:
             ${{ runner.temp }}/reproduce.log
             ${{ runner.temp }}/benchmarks.diff
 
+  cuda-build:
+    # Proves that the CUDA translation unit compiles and links with SANKHYA_ENABLE_CUDA=ON.
+    # GitHub's free runners have no GPU, so this job builds only — it never runs kernels.
+    # The CPU-only jobs above are the authoritative correctness gate; this job is the
+    # authoritative "the CUDA code compiles" gate.
+    name: CUDA build (compile only, no GPU runner)
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:12.6.0-devel-ubuntu22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt-get update
+          apt-get install -y ninja-build cmake g++ zlib1g-dev git
+
+      - name: Configure with CUDA enabled
+        run: |
+          cmake -G Ninja -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DSANKHYA_ENABLE_CUDA=ON \
+            -DSANKHYA_BUILD_TESTS=OFF \
+            -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc
+
+      - name: Build
+        run: cmake --build build -j
+
   format:
     name: clang-format
     runs-on: ubuntu-latest
