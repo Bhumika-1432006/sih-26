@@ -253,9 +253,12 @@ if(SANKHYA_ENABLE_CUDA)
   # Collect every .cu file under src/gpu/ so adding a new kernel needs no CMake edit.
   file(GLOB SANKHYA_GPU_SOURCES "src/gpu/*.cu")
   target_sources(sankhya_objects PRIVATE ${SANKHYA_GPU_SOURCES})
-  # Explicitly pin the arch on the target; CMAKE_CUDA_ARCHITECTURES only applies as a
-  # default to targets created after the variable is set.
+  # Explicitly pin arch and standard on the target: sankhya_objects was created before
+  # CUDA was enabled so it may have inherited the project-wide C++20 requirement.
+  # The global CMAKE_CUDA_STANDARD only applies to targets created after it is set.
   set_property(TARGET sankhya_objects PROPERTY CUDA_ARCHITECTURES 89)
+  set_property(TARGET sankhya_objects PROPERTY CUDA_STANDARD 17)
+  set_property(TARGET sankhya_objects PROPERTY CUDA_STANDARD_REQUIRED ON)
   # cuSPARSE supplies SpMV on device — matrix arithmetic, not an optimisation algorithm.
   # See docs/PROVENANCE.md section 2.
   target_link_libraries(sankhya_objects PRIVATE CUDA::cusparse CUDA::cudart)
