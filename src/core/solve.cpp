@@ -667,8 +667,9 @@ Solution solve_unguarded(const Model& model, const Options& options, SolveContro
 
     // VRAM check (#281): before committing to GPU PDHG, verify the model fits in available
     // device memory. Falls back to CPU PDHG with a diagnostic when it does not.
-    bool use_gpu_pdhg = chosen.use_gpu || options.get_bool("gpu");
+    // The variable lives inside the ifdef so the CPU-only build does not see it as unused.
 #ifdef SANKHYA_ENABLE_CUDA
+    bool use_gpu_pdhg = chosen.use_gpu || options.get_bool("gpu");
     if (use_gpu_pdhg && want_pdhg) {
       std::size_t free_bytes = 0, total_bytes = 0;
       if (gpu::device_free_memory(&free_bytes, &total_bytes)) {
