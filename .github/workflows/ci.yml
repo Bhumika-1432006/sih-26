@@ -534,7 +534,7 @@ jobs:
           DEBIAN_FRONTEND: noninteractive
         run: |
           apt-get update
-          apt-get install -y ninja-build cmake g++ zlib1g-dev
+          apt-get install -y ninja-build cmake g++ zlib1g-dev git
 
       - name: Configure with CUDA enabled
         run: |
