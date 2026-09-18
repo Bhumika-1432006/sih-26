@@ -347,6 +347,31 @@ A ratio above 1 means restarts saved iterations on that instance.
 
 ---
 
+### 1g. GPU PDHG crossover — when the GPU wins
+
+The GPU backend (`algorithm=pdhg gpu=true`) offloads the matrix-vector products to CUDA.
+Small problems spend more time on data transfer than on computation; the crossover point
+below is where the GPU overtakes the CPU.
+
+Source CSV: `bench/results/gpu-c21e52a.csv`  
+Commit `c21e52a` · machine `Windows-AMD64`
+
+The GPU backend (`algorithm=pdhg gpu=true`) has a fixed per-solve overhead for data transfer and CUDA initialisation. For small problems that overhead dominates and the CPU wins; as problem size grows the parallelism pays off.
+
+| rows×cols | CPU 1e-4 (s) | GPU 1e-4 (s) | speedup | CPU 1e-8 (s) | GPU 1e-8 (s) | speedup |
+|----------:|-------------:|-------------:|--------:|-------------:|-------------:|--------:|
+| 200×200 | — | — | — | 0.101 | 3.468 | 0.03× |
+| 500×500 | — | — | — | 0.320 | 7.365 | 0.04× |
+| 1000×1000 | — | — | — | 0.097 | 0.804 | 0.12× |
+| 2000×2000 | — | — | — | 1.003 | 6.153 | 0.16× |
+| 5000×5000 | — | — | — | 0.779 | 1.403 | 0.56× |
+| 10000×10000 | — | — | — | 2.631 | 1.917 | **1.37×** |
+
+GPU: NVIDIA GeForce RTX 5050 Laptop GPU, compute 12.0, 8 GiB VRAM.  
+Instances are synthetic KKT LPs with ~5 nonzeros per column (seed 42).
+
+---
+
 ### 1f. Scale — how far up this goes
 
 Every tier above is Netlib-sized: the largest instance in the full set has 12,230 columns, and
@@ -783,9 +808,7 @@ Reading the table: the `conditioning` cliff is `kZeroDrop` (`tolerances.hpp`), t
   The comparison in section 4 uses solver-internal time on both sides for that reason.
 - The failures in section 1b are real and are not going to be quietly dropped from a later
   edition of this file. Each one carries the issue tracking it.
-- One engine named in PS26119 is not measured on this page at all: there is no GPU backend
-  on `main` - the CUDA backend is PR #274, open, not yet built or measured on a GPU
-  (#16-#19). The interior-point method (`algorithm=ipm`, #56) is opt-in and produces no
+- The GPU PDHG backend is measured in section 1g. The interior-point method (`algorithm=ipm`, #56) is opt-in and produces no
   basis, so it is not the engine behind any Netlib or MIPLIB table above - sections 1f to
   1f.3 are the exception, where it appears beside the others: since the AMD ordering (#193)
   it reaches 5,000 rows on the random shape and 20,000 on the staircase, and solves the
