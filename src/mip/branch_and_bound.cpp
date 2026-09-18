@@ -242,8 +242,14 @@ Solution BranchAndBound::run() {
     current_warm_ = std::move(nodes_[static_cast<std::size_t>(node_index)].warm);
 
     if (!propagate()) {
+      const bool by_conflict = conflict_pruned_;
       leave();
       ++nodes_pruned_;
+      if (by_conflict) {
+        ++conflict_stats_.nodes_pruned;
+      } else {
+        analyze_conflict(node_index, ConflictSource::kPropagation, nullptr);
+      }
       continue;
     }
 
@@ -255,6 +261,7 @@ Solution BranchAndBound::run() {
     if (relaxation.status == SolveStatus::kInfeasible) {
       leave();
       ++nodes_pruned_;
+      analyze_conflict(node_index, ConflictSource::kLp, &relaxation.farkas_dual);
       continue;
     }
     if (relaxation.status == SolveStatus::kUnbounded) {
@@ -449,6 +456,7 @@ Solution BranchAndBound::run() {
     }
   }
 
+  report_conflicts();
   // A search stopped by a limit is exactly the one worth resuming (#287).
   if (limit_hit && !open_.empty()) save_checkpoint();
 

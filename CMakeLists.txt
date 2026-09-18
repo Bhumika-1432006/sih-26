@@ -209,6 +209,8 @@ set(SANKHYA_CORE_SOURCES
   src/mip/branch_and_bound_heuristics.cpp
   src/mip/checkpoint.cpp
   src/mip/solution_pool.cpp
+  src/mip/conflict.cpp
+  src/mip/branch_and_bound_conflicts.cpp
   src/mip/heuristics.cpp
   src/nlp/convex_nlp.cpp
   src/nlp/convexity.cpp
