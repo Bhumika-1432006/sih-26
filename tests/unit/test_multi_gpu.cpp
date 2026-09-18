@@ -11,9 +11,9 @@
 namespace sankhya {
 namespace {
 
-using gpu::RowPartition;
 using gpu::parse_device_ids;
 using gpu::partition_rows;
+using gpu::RowPartition;
 
 // ---- parse_device_ids ----------------------------------------------------
 
@@ -162,7 +162,9 @@ TEST(MultiGpu, LocalMIsCorrect) {
 // ---- CUDA-only tests (device_count, can_peer_access) ---------------------
 #ifdef SANKHYA_ENABLE_CUDA
 
-TEST(MultiGpu, DeviceCountNonNegative) { EXPECT_GE(gpu::device_count(), 0); }
+TEST(MultiGpu, DeviceCountNonNegative) {
+  EXPECT_GE(gpu::device_count(), 0);
+}
 
 TEST(MultiGpu, PeerAccessSelfIsTrue) {
   const int cnt = gpu::device_count();

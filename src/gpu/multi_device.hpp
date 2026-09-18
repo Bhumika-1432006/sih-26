@@ -23,7 +23,7 @@ struct RowPartition {
 // Partition m rows across device_ids as evenly as possible.
 // Remainder rows go one-per-device to the first (remainder) devices.
 [[nodiscard]] std::vector<RowPartition> partition_rows(int m,
-                                                        const std::vector<int>& device_ids);
+                                                       const std::vector<int>& device_ids);
 
 // Parse comma-separated device IDs (e.g. "0,1,2"). Returns {0} for empty or "auto".
 // Negative values and non-integer tokens are silently skipped. Duplicates are removed.

@@ -23,7 +23,7 @@ namespace sankhya::gpu {
 ///   - device_ids has only one entry, OR
 ///   - any device fails to allocate or initialize.
 [[nodiscard]] Solution solve_pdhg_multi_gpu(const Model& model, const Options& options,
-                                             const std::vector<int>& device_ids, Logger& logger,
-                                             SolveControl* control = nullptr);
+                                            const std::vector<int>& device_ids, Logger& logger,
+                                            SolveControl* control = nullptr);
 
 }  // namespace sankhya::gpu
