@@ -780,7 +780,7 @@ Solution solve_pdhg_gpu(const Model& model, const Options& options, Logger& logg
     solution.status = SolveStatus::kOptimal;
     char buf[256];
     std::snprintf(buf, sizeof(buf),
-        "CUDA PDHG converged after %d iterations and %d restarts; absolute primal %.3e, "
+        "CUDA PDHG converged after %ld iterations and %ld restarts; absolute primal %.3e, "
         "dual %.3e, relative gap %.3e",
         iteration, restarts, final_r.absolute_primal, final_r.absolute_dual,
         final_r.gap_as_verified);
@@ -789,7 +789,7 @@ Solution solve_pdhg_gpu(const Model& model, const Options& options, Logger& logg
     solution.status = SolveStatus::kFeasible;
     char buf[256];
     std::snprintf(buf, sizeof(buf),
-        "CUDA PDHG met requested tolerance %.1e after %d iterations but NOT project standard "
+        "CUDA PDHG met requested tolerance %.1e after %ld iterations but NOT project standard "
         "(primal %.3e vs %.1e, dual %.3e vs %.1e, gap %.3e vs %.1e)",
         tolerance, iteration, final_r.absolute_primal, tol::kPrimalFeasibility,
         final_r.absolute_dual, tol::kDualFeasibility, final_r.gap_as_verified,
@@ -802,8 +802,8 @@ Solution solve_pdhg_gpu(const Model& model, const Options& options, Logger& logg
             : SolveStatus::kIterationLimit;
     char buf[256];
     std::snprintf(buf, sizeof(buf),
-        "CUDA PDHG stopped at relative primal %.3e, dual %.3e, gap %.3e after %d "
-        "iterations and %d restarts (target %.1e)",
+        "CUDA PDHG stopped at relative primal %.3e, dual %.3e, gap %.3e after %ld "
+        "iterations and %ld restarts (target %.1e)",
         final_r.primal, final_r.dual, final_r.gap, iteration, restarts, tolerance);
     solution.message = buf;
   }
