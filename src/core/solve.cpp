@@ -673,6 +673,7 @@ Solution solve_unguarded(const Model& model, const Options& options, SolveContro
     if (use_gpu_pdhg && want_pdhg) {
       std::size_t free_bytes = 0, total_bytes = 0;
       if (gpu::device_free_memory(&free_bytes, &total_bytes)) {
+        // Uses pre-presolve `model` dimensions: conservative (overestimates), safe.
         const std::size_t required = gpu::estimate_pdhg_gpu_memory(
             model.num_rows(), model.num_cols(), model.num_nonzeros());
         const std::size_t reserve = gpu::vram_reserve(total_bytes);
