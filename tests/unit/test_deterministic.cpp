@@ -295,5 +295,27 @@ TEST(Deterministic, TheFingerprintSeparatesModelsThatDifferAnywhere) {
   EXPECT_NE(signed_zero.fingerprint(), reference) << "a negative zero bound";
 }
 
+// ---- GPU + deterministic (#383) ---------------------------------------------------------
+
+TEST(Deterministic, GpuPdhgFallsBackToCpuWhenDeterministicIsRequested) {
+  // GPU PDHG uses atomicAdd reductions whose order is non-deterministic; requesting both
+  // gpu=true and deterministic=true is contradictory. solve() must refuse the GPU path and
+  // fall back to CPU PDHG. This is verifiable on CI with no CUDA device present because
+  // the fall-through produces "pdhg-cpu" in either case (no device → skip GPU; device +
+  // deterministic=true → also skip GPU with a warning).
+  const Model lp = dense_lp(20);
+  Options options = deterministic(true);
+  options.set_bool("gpu", true);
+  options.set_string("algorithm", "pdhg");
+
+  const Solution result = solve(lp, options);
+  ASSERT_NE(result.status, SolveStatus::kNotSolved) << result.message;
+  EXPECT_EQ(result.algorithm, "pdhg-cpu")
+      << "GPU path must be refused when deterministic=true; got: " << result.algorithm;
+
+  // Also verify bit-for-bit reproducibility (the primary determinism guarantee).
+  expect_identical(result, solve(lp, options), "GPU refused → CPU PDHG must still reproduce");
+}
+
 }  // namespace
 }  // namespace sankhya
