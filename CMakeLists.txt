@@ -222,6 +222,7 @@ set(SANKHYA_CORE_SOURCES
   src/pdhg/pdhg.cpp
   src/pdhg/pdhg_evaluate.cpp
   src/gpu/gpu_memory.cpp
+  src/gpu/multi_device.cpp
   src/simplex/dual_simplex.cpp
   src/simplex/primal_simplex.cpp
   src/simplex/crossover.cpp

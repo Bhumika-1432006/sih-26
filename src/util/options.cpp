@@ -395,6 +395,18 @@ const std::vector<OptionSpec>& Options::registry() {
                  0.0,
                  0.0,
                  {}});
+    s.push_back({"gpu_devices",
+                 OptionType::String,
+                 std::string("auto"),
+                 "Comma-separated CUDA device IDs for multi-GPU PDHG (#295). 'auto' uses "
+                 "device 0 (single-GPU path). Two or more IDs (e.g. '0,1') enable the "
+                 "row-partitioned multi-GPU path: each device owns one row block of the "
+                 "constraint matrix; the primal iterate is replicated; a host-mediated "
+                 "allreduce synchronises A^T*y each iteration. Devices that fail the "
+                 "architecture check or are absent cause a fallback to the single-GPU path.",
+                 {},
+                 {},
+                 {}});
     s.push_back({"ranging",
                  OptionType::Bool,
                  false,
