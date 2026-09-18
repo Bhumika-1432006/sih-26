@@ -272,6 +272,20 @@ if(SANKHYA_ENABLE_CUDA)
   set_property(TARGET sankhya_objects PROPERTY CUDA_ARCHITECTURES ${SANKHYA_CUDA_ARCHITECTURES})
   set_property(TARGET sankhya_objects PROPERTY CUDA_STANDARD 17)
   set_property(TARGET sankhya_objects PROPERTY CUDA_STANDARD_REQUIRED ON)
+  # The runtime capability check (#282) must agree with what was compiled: a card below the
+  # LOWEST architecture in the list has neither SASS nor forward-compatible PTX to run, so
+  # the floor is derived from the list rather than kept as a second copy in a header. A
+  # symbolic list ("all-major", "native") has no numeric floor here and keeps the header's
+  # documented default.
+  set(_sankhya_min_arch 999)
+  foreach(_arch ${SANKHYA_CUDA_ARCHITECTURES})
+    if(_arch MATCHES "^[0-9]+$" AND _arch LESS _sankhya_min_arch)
+      set(_sankhya_min_arch ${_arch})
+    endif()
+  endforeach()
+  if(NOT _sankhya_min_arch EQUAL 999)
+    target_compile_definitions(sankhya_objects PUBLIC SANKHYA_MIN_COMPUTE_ARCH=${_sankhya_min_arch})
+  endif()
   # cuSPARSE supplies SpMV on device — matrix arithmetic, not an optimisation algorithm.
   # See docs/PROVENANCE.md section 2.
   target_link_libraries(sankhya_objects PRIVATE CUDA::cusparse CUDA::cudart)

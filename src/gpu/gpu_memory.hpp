@@ -12,10 +12,15 @@
 
 namespace sankhya::gpu {
 
-/// Minimum NVIDIA compute capability supported by this SANKHYA CUDA build.
-/// Matches the lowest entry in SANKHYA_CUDA_ARCHITECTURES (default 75 = Turing sm_75).
-/// Update if the CMakeLists.txt default architecture list changes.
-inline constexpr int kMinComputeArch = 75;  // major*10 + minor
+/// Minimum NVIDIA compute capability this build can run on, as major*10 + minor. A CUDA
+/// build defines SANKHYA_MIN_COMPUTE_ARCH from the lowest numeric entry of
+/// SANKHYA_CUDA_ARCHITECTURES (CMakeLists.txt), so the runtime check cannot drift from what
+/// was compiled; the CPU build, and a symbolic architecture list, use the documented default
+/// of the default list, 75 (Turing sm_75).
+#ifndef SANKHYA_MIN_COMPUTE_ARCH
+#define SANKHYA_MIN_COMPUTE_ARCH 75
+#endif
+inline constexpr int kMinComputeArch = SANKHYA_MIN_COMPUTE_ARCH;
 
 /// Estimate the peak device-side bytes required to run GPU PDHG on a model with the given
 /// dimensions. The calculation accounts for:
