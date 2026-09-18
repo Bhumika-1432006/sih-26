@@ -16,7 +16,13 @@ namespace sankhya::gpu {
 
 bool device_available(std::string* description) {
   int count = 0;
-  if (cudaGetDeviceCount(&count) != cudaSuccess || count == 0) {
+  cudaError_t err = cudaGetDeviceCount(&count);
+  if (err != cudaSuccess) {
+    if (description)
+      *description = std::string("CUDA driver error: ") + cudaGetErrorString(err);
+    return false;
+  }
+  if (count == 0) {
     if (description) *description = "no CUDA device found";
     return false;
   }

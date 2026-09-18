@@ -39,6 +39,7 @@ add_executable(sankhya_tests
   unit/test_writer.cpp
   unit/test_iis.cpp
   unit/test_pdhg.cpp
+  unit/test_banner.cpp
   unit/test_pdhg_cuda_regression.cpp
   unit/test_qp.cpp
   unit/test_convexity_sparse.cpp
