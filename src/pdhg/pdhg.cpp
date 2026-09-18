@@ -38,6 +38,8 @@
 
 #include "sankhya/pdhg.hpp"
 
+#include "pdhg_evaluate.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -67,202 +69,6 @@ double project(double value, double lower, double upper) {
   if (is_finite_bound(lower) && value < lower) return lower;
   if (is_finite_bound(upper) && value > upper) return upper;
   return value;
-}
-
-double squared_norm(const std::vector<double>& v) {
-  double total = 0.0;
-  for (const double value : v) total += value * value;
-  return total;
-}
-
-double euclidean_norm(const std::vector<double>& v) {
-  return std::sqrt(squared_norm(v));
-}
-
-/// Convergence measured in the ORIGINAL problem, never the scaled one. Reporting residuals
-/// from the scaled problem would let a well-chosen preconditioner flatter the result.
-struct Residuals {
-  double primal = 0.0;  ///< relative primal infeasibility
-  double dual = 0.0;    ///< relative dual infeasibility
-  double gap = 0.0;     ///< relative primal-dual objective gap
-  double primal_objective = 0.0;
-  double dual_objective = 0.0;
-
-  /// The same violations UNSCALED. A relative residual divides by (1 + ||bounds||), so on a
-  /// model whose right-hand sides run to 1e4 a relative 1e-8 still permits an absolute
-  /// violation around 1e-4. That is standard and fine as a stopping rule - it is what the
-  /// PDLP literature uses - but it is NOT the standard the rest of this project reports
-  /// against, and conflating the two is how the solver ends up stamping "optimal" on a point
-  /// tools/verify_solution.py then rejects.
-  double absolute_primal = 0.0;
-  double absolute_dual = 0.0;
-
-  /// The duality gap normalised the way tools/verify_solution.py normalises it, by
-  /// max(1, |primal objective|), rather than the PDLP convention of 1 + |primal| + |dual|.
-  /// The two differ by roughly a factor of two, which is more than enough for this engine to
-  /// pass its own optimality test and fail the verifier's on the same point. The PDLP form
-  /// stays as the stopping rule because that is the literature convention; the claim is
-  /// judged by the verifier's form because that is what will be checked.
-  double gap_as_verified = 0.0;
-
-  /// max |multiplier| * slack over rows and columns - the same product form
-  /// tools/verify_solution.py uses. The duality gap implies this only in the limit, so a
-  /// point can show a tiny gap and still price a constraint it is not sitting on.
-  double complementarity = 0.0;
-
-  [[nodiscard]] double worst() const { return std::max({primal, dual, gap}); }
-
-  /// Has the run met the tolerance the CALLER asked for, AND is the point actually feasible
-  /// in absolute terms? Both are required to stop.
-  ///
-  /// The absolute half is not pedantry. kFeasible in sankhya::Solution asserts that a
-  /// feasible point is being reported, so stopping on a relative residual alone would let
-  /// this engine claim feasibility for a point that misses the project's own primal
-  /// tolerance - a weaker claim than kOptimal, but still one the verifier rejects.
-  [[nodiscard]] bool meets_request(double tolerance) const {
-    return primal <= tolerance && dual <= tolerance && gap <= tolerance &&
-           absolute_primal <= tol::kPrimalFeasibility;
-  }
-
-  /// Would this point survive independent verification? These are the project's own
-  /// tolerances from include/sankhya/tolerances.hpp, the same ones the .sol file is judged
-  /// against, and meeting them is the ONLY basis on which this engine claims kOptimal.
-  [[nodiscard]] bool meets_project_standard() const {
-    return absolute_primal <= tol::kPrimalFeasibility &&
-           absolute_dual <= tol::kDualFeasibility && gap_as_verified <= tol::kDualityGap &&
-           complementarity <= 1e-6;
-  }
-};
-
-/// The unscaled problem, held once so the convergence test does not rebuild it.
-struct Problem {
-  const Model* model = nullptr;
-  std::vector<double> cost;  ///< minimise-space objective
-  double bound_norm = 0.0;   ///< ||finite row bounds||, for the relative primal residual
-  double cost_norm = 0.0;    ///< ||c||, for the relative dual residual
-};
-
-/// Compute the unscaled residuals for a candidate (x, y).
-Residuals evaluate(const Problem& problem, const std::vector<double>& x,
-                   const std::vector<double>& y, std::vector<double>* activity,
-                   std::vector<double>* reduced) {
-  const Model& model = *problem.model;
-  const Index rows = model.num_rows();
-  const Index cols = model.num_cols();
-
-  Residuals r;
-
-  // ---- Primal: how far Ax falls outside the row bounds. x is projected every iteration,
-  // so the column bounds hold by construction and contribute nothing.
-  activity->assign(static_cast<std::size_t>(rows), 0.0);
-  if (rows > 0) model.matrix.multiply(x.data(), activity->data());
-  double primal_violation = 0.0;
-  for (Index i = 0; i < rows; ++i) {
-    const auto u = static_cast<std::size_t>(i);
-    const double a = (*activity)[u];
-    double violation = 0.0;
-    if (is_finite_bound(model.row_lower[u])) {
-      violation = std::max(violation, model.row_lower[u] - a);
-    }
-    if (is_finite_bound(model.row_upper[u])) {
-      violation = std::max(violation, a - model.row_upper[u]);
-    }
-    primal_violation += violation * violation;
-  }
-  r.absolute_primal = std::sqrt(primal_violation);
-  r.primal = r.absolute_primal / (1.0 + problem.bound_norm);
-
-  // ---- Dual: d = c + A'y. A component of d is only a violation where no bound can absorb
-  // it, i.e. a positive reduced cost on a variable with no lower bound, or a negative one
-  // on a variable with no upper bound.
-  reduced->assign(static_cast<std::size_t>(cols), 0.0);
-  for (Index j = 0; j < cols; ++j) {
-    (*reduced)[static_cast<std::size_t>(j)] = problem.cost[static_cast<std::size_t>(j)];
-  }
-  if (rows > 0) model.matrix.transpose_multiply_add(y.data(), reduced->data());
-
-  double dual_violation = 0.0;
-  double bound_contribution = 0.0;
-  for (Index j = 0; j < cols; ++j) {
-    const auto u = static_cast<std::size_t>(j);
-    const double d = (*reduced)[u];
-    if (d > 0.0) {
-      if (is_finite_bound(model.col_lower[u])) {
-        bound_contribution += d * model.col_lower[u];
-      } else {
-        dual_violation += d * d;
-      }
-    } else if (d < 0.0) {
-      if (is_finite_bound(model.col_upper[u])) {
-        bound_contribution += d * model.col_upper[u];
-      } else {
-        dual_violation += d * d;
-      }
-    }
-  }
-  // The dual residual is assigned once, below, after the row multipliers have had
-  // their chance to contribute a violation too.
-
-  // ---- Objectives. The dual objective is the Lagrangian bound:
-  //   sum_j (d_j > 0 ? d_j l_j : d_j u_j)  -  sigma_C(y)
-  double support = 0.0;
-  for (Index i = 0; i < rows; ++i) {
-    const auto u = static_cast<std::size_t>(i);
-    const double yi = y[u];
-    if (yi > 0.0) {
-      if (is_finite_bound(model.row_upper[u])) {
-        support += yi * model.row_upper[u];
-      } else {
-        dual_violation += yi * yi;  // no bound to price against: the dual is infeasible
-      }
-    } else if (yi < 0.0) {
-      if (is_finite_bound(model.row_lower[u])) {
-        support += yi * model.row_lower[u];
-      } else {
-        dual_violation += yi * yi;
-      }
-    }
-  }
-  r.absolute_dual = std::sqrt(dual_violation);
-  r.dual = r.absolute_dual / (1.0 + problem.cost_norm);
-
-  // Complementary slackness, in the product form the verifier uses.
-  for (Index i = 0; i < rows; ++i) {
-    const auto u = static_cast<std::size_t>(i);
-    if (model.row_lower[u] == model.row_upper[u]) continue;  // equality: always tight
-    const double lower_slack = is_finite_bound(model.row_lower[u])
-                                   ? (*activity)[u] - model.row_lower[u]
-                                   : std::numeric_limits<double>::infinity();
-    const double upper_slack = is_finite_bound(model.row_upper[u])
-                                   ? model.row_upper[u] - (*activity)[u]
-                                   : std::numeric_limits<double>::infinity();
-    r.complementarity =
-        std::max(r.complementarity, std::fabs(y[u]) * std::min(lower_slack, upper_slack));
-  }
-  for (Index j = 0; j < cols; ++j) {
-    const auto u = static_cast<std::size_t>(j);
-    if (model.col_lower[u] == model.col_upper[u]) continue;  // fixed column
-    const double lower_slack = is_finite_bound(model.col_lower[u])
-                                   ? x[u] - model.col_lower[u]
-                                   : std::numeric_limits<double>::infinity();
-    const double upper_slack = is_finite_bound(model.col_upper[u])
-                                   ? model.col_upper[u] - x[u]
-                                   : std::numeric_limits<double>::infinity();
-    r.complementarity = std::max(r.complementarity,
-                                 std::fabs((*reduced)[u]) * std::min(lower_slack, upper_slack));
-  }
-
-  double primal_objective = 0.0;
-  for (Index j = 0; j < cols; ++j) {
-    primal_objective +=
-        problem.cost[static_cast<std::size_t>(j)] * x[static_cast<std::size_t>(j)];
-  }
-  r.primal_objective = primal_objective;
-  r.dual_objective = bound_contribution - support;
-  const double absolute_gap = std::fabs(r.primal_objective - r.dual_objective);
-  r.gap = absolute_gap / (1.0 + std::fabs(r.primal_objective) + std::fabs(r.dual_objective));
-  r.gap_as_verified = absolute_gap / std::max(1.0, std::fabs(r.primal_objective));
-  return r;
 }
 
 }  // namespace
@@ -538,7 +344,7 @@ Solution solve_pdhg(const Model& model, const Options& options, Logger& logger,
     unscale(x, y);
     std::vector<double> current_x = x_unscaled;
     std::vector<double> current_y = y_unscaled;
-    const Residuals current = evaluate(problem, current_x, current_y, &activity, &reduced);
+    const Residuals current = evaluate(problem, current_x, current_y, activity, reduced);
 
     // PDLP restarts to whichever of the running average and the current iterate has the
     // better KKT error, so both are evaluated and the better one is carried forward.
@@ -562,7 +368,7 @@ Solution solve_pdhg(const Model& model, const Options& options, Logger& logger,
       unscale(x_avg, y_avg);
       average_x = x_unscaled;
       average_y = y_unscaled;
-      average = evaluate(problem, average_x, average_y, &activity, &reduced);
+      average = evaluate(problem, average_x, average_y, activity, reduced);
       if (average.worst() < current.worst()) {
         chosen = &average;
         chosen_x = &average_x;
@@ -683,7 +489,7 @@ Solution solve_pdhg(const Model& model, const Options& options, Logger& logger,
     solution.col_value[u] = best_x.empty() ? 0.0 : best_x[u];
   }
   // Recompute the reduced costs at the reported point so the .sol file is self-consistent.
-  const Residuals final_residuals = evaluate(problem, best_x, best_y, &activity, &reduced);
+  const Residuals final_residuals = evaluate(problem, best_x, best_y, activity, reduced);
   for (Index j = 0; j < cols; ++j) {
     const auto u = static_cast<std::size_t>(j);
     solution.col_dual[u] = sense * reduced[u];

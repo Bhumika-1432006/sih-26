@@ -21,6 +21,8 @@
 
 #include "pdhg_gpu.hpp"
 
+#include "../pdhg/pdhg_evaluate.hpp"
+
 #include <cuda_runtime.h>
 #include <cusparse.h>
 #include <cub/device/device_reduce.cuh>
@@ -301,142 +303,10 @@ static bool spmv_t(GpuState& g, double* d_in_m, double* d_out_n) {
   return true;
 }
 
-// ---- Convergence evaluation (CPU, on unscaled problem) ------------------
-// Faithfully replicated from src/pdhg/pdhg.cpp — same maths, same paper references.
-
-struct Residuals {
-  double primal = 0.0, dual = 0.0, gap = 0.0;
-  double primal_objective = 0.0, dual_objective = 0.0;
-  double absolute_primal = 0.0, absolute_dual = 0.0;
-  double gap_as_verified = 0.0, complementarity = 0.0;
-
-  [[nodiscard]] double worst() const { return std::max({primal, dual, gap}); }
-
-  [[nodiscard]] bool meets_request(double tol) const {
-    return primal <= tol && dual <= tol && gap <= tol &&
-           absolute_primal <= tol::kPrimalFeasibility;
-  }
-
-  [[nodiscard]] bool meets_project_standard() const {
-    return absolute_primal <= tol::kPrimalFeasibility &&
-           absolute_dual <= tol::kDualFeasibility && gap_as_verified <= tol::kDualityGap &&
-           complementarity <= 1e-6;
-  }
-};
-
-struct Problem {
-  const Model* model = nullptr;
-  std::vector<double> cost;
-  double bound_norm = 0.0;
-  double cost_norm = 0.0;
-};
-
-static double euclidean_norm(const std::vector<double>& v) {
-  double s = 0.0;
-  for (double x : v) s += x * x;
-  return std::sqrt(s);
-}
-
-static Residuals evaluate(const Problem& prob, const std::vector<double>& x,
-                          const std::vector<double>& y, std::vector<double>& activity,
-                          std::vector<double>& reduced) {
-  const Model& model = *prob.model;
-  const Index rows = model.num_rows();
-  const Index cols = model.num_cols();
-  Residuals r;
-
-  // Primal: how far Ax falls outside the row bounds
-  activity.assign(static_cast<std::size_t>(rows), 0.0);
-  if (rows > 0) model.matrix.multiply(x.data(), activity.data());
-  double primal_viol = 0.0;
-  for (Index i = 0; i < rows; ++i) {
-    const auto u = static_cast<std::size_t>(i);
-    const double a = activity[u];
-    double v = 0.0;
-    if (is_finite_bound(model.row_lower[u])) v = std::max(v, model.row_lower[u] - a);
-    if (is_finite_bound(model.row_upper[u])) v = std::max(v, a - model.row_upper[u]);
-    primal_viol += v * v;
-  }
-  r.absolute_primal = std::sqrt(primal_viol);
-  r.primal = r.absolute_primal / (1.0 + prob.bound_norm);
-
-  // Dual: d = c + A'y
-  reduced.assign(static_cast<std::size_t>(cols), 0.0);
-  for (Index j = 0; j < cols; ++j)
-    reduced[static_cast<std::size_t>(j)] = prob.cost[static_cast<std::size_t>(j)];
-  if (rows > 0) model.matrix.transpose_multiply_add(y.data(), reduced.data());
-
-  double dual_viol = 0.0, bound_contrib = 0.0;
-  for (Index j = 0; j < cols; ++j) {
-    const auto u = static_cast<std::size_t>(j);
-    const double d = reduced[u];
-    if (d > 0.0) {
-      if (is_finite_bound(model.col_lower[u]))
-        bound_contrib += d * model.col_lower[u];
-      else
-        dual_viol += d * d;
-    } else if (d < 0.0) {
-      if (is_finite_bound(model.col_upper[u]))
-        bound_contrib += d * model.col_upper[u];
-      else
-        dual_viol += d * d;
-    }
-  }
-
-  double support = 0.0;
-  for (Index i = 0; i < rows; ++i) {
-    const auto u = static_cast<std::size_t>(i);
-    const double yi = y[u];
-    if (yi > 0.0) {
-      if (is_finite_bound(model.row_upper[u]))
-        support += yi * model.row_upper[u];
-      else
-        dual_viol += yi * yi;
-    } else if (yi < 0.0) {
-      if (is_finite_bound(model.row_lower[u]))
-        support += yi * model.row_lower[u];
-      else
-        dual_viol += yi * yi;
-    }
-  }
-  r.absolute_dual = std::sqrt(dual_viol);
-  r.dual = r.absolute_dual / (1.0 + prob.cost_norm);
-
-  // Complementary slackness
-  for (Index i = 0; i < rows; ++i) {
-    const auto u = static_cast<std::size_t>(i);
-    if (model.row_lower[u] == model.row_upper[u]) continue;
-    const double lo_sl = is_finite_bound(model.row_lower[u])
-                             ? activity[u] - model.row_lower[u]
-                             : std::numeric_limits<double>::infinity();
-    const double hi_sl = is_finite_bound(model.row_upper[u])
-                             ? model.row_upper[u] - activity[u]
-                             : std::numeric_limits<double>::infinity();
-    r.complementarity = std::max(r.complementarity, std::fabs(y[u]) * std::min(lo_sl, hi_sl));
-  }
-  for (Index j = 0; j < cols; ++j) {
-    const auto u = static_cast<std::size_t>(j);
-    if (model.col_lower[u] == model.col_upper[u]) continue;
-    const double lo_sl = is_finite_bound(model.col_lower[u])
-                             ? x[u] - model.col_lower[u]
-                             : std::numeric_limits<double>::infinity();
-    const double hi_sl = is_finite_bound(model.col_upper[u])
-                             ? model.col_upper[u] - x[u]
-                             : std::numeric_limits<double>::infinity();
-    r.complementarity =
-        std::max(r.complementarity, std::fabs(reduced[u]) * std::min(lo_sl, hi_sl));
-  }
-
-  double pobj = 0.0;
-  for (Index j = 0; j < cols; ++j)
-    pobj += prob.cost[static_cast<std::size_t>(j)] * x[static_cast<std::size_t>(j)];
-  r.primal_objective = pobj;
-  r.dual_objective = bound_contrib - support;
-  const double abs_gap = std::fabs(pobj - r.dual_objective);
-  r.gap = abs_gap / (1.0 + std::fabs(pobj) + std::fabs(r.dual_objective));
-  r.gap_as_verified = abs_gap / std::max(1.0, std::fabs(pobj));
-  return r;
-}
+using pdhg::euclidean_norm;
+using pdhg::evaluate;
+using pdhg::Problem;
+using pdhg::Residuals;
 
 }  // anonymous namespace
 
