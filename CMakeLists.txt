@@ -239,14 +239,23 @@ target_compile_definitions(sankhya_objects PRIVATE
   SANKHYA_COMPILER="${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
 
 if(SANKHYA_ENABLE_CUDA)
-  enable_language(CUDA)
-  # Ada Lovelace (RTX 40xx, compute 8.9). PTX is forward-compatible, so a newer GPU
-  # runs this binary without recompilation; a pre-Ada GPU does not.
+  # Must be set before enable_language(CUDA): CMake reads CMAKE_CUDA_ARCHITECTURES
+  # when it first configures the toolchain; setting it after has no effect on existing
+  # targets.  Ada Lovelace (RTX 40xx, compute 8.9); PTX is forward-compatible.
   set(CMAKE_CUDA_ARCHITECTURES 89)
+  # C++17 is the highest standard that CMake 3.22/nvcc map reliably without probing
+  # for cuda_std_20 compile features (which CMake 3.22 may not emit for all nvcc
+  # versions).  Our .cu files use no C++20-only constructs.
+  set(CMAKE_CUDA_STANDARD 17)
+  set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+  enable_language(CUDA)
   find_package(CUDAToolkit REQUIRED)
   # Collect every .cu file under src/gpu/ so adding a new kernel needs no CMake edit.
   file(GLOB SANKHYA_GPU_SOURCES "src/gpu/*.cu")
   target_sources(sankhya_objects PRIVATE ${SANKHYA_GPU_SOURCES})
+  # Explicitly pin the arch on the target; CMAKE_CUDA_ARCHITECTURES only applies as a
+  # default to targets created after the variable is set.
+  set_property(TARGET sankhya_objects PROPERTY CUDA_ARCHITECTURES 89)
   # cuSPARSE supplies SpMV on device — matrix arithmetic, not an optimisation algorithm.
   # See docs/PROVENANCE.md section 2.
   target_link_libraries(sankhya_objects PRIVATE CUDA::cusparse CUDA::cudart)
