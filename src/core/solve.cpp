@@ -730,6 +730,12 @@ Solution solve_unguarded(const Model& model, const Options& options, SolveContro
     // Both variables live inside the ifdef so the CPU-only build does not see them as unused.
 #ifdef SANKHYA_ENABLE_CUDA
     bool use_gpu_pdhg = chosen.use_gpu || options.get_bool("gpu");
+    if (use_gpu_pdhg && want_pdhg && options.get_bool("deterministic")) {
+      logger.warning(
+          "GPU PDHG: deterministic=true is incompatible with atomicAdd reductions (#383); "
+          "falling back to CPU PDHG");
+      use_gpu_pdhg = false;
+    }
     if (use_gpu_pdhg && want_pdhg) {
       int cap_major = 0, cap_minor = 0;
       if (gpu::device_compute_capability(&cap_major, &cap_minor)) {

@@ -50,22 +50,22 @@ TEST(GpuMemory, NegativeDimensionsAreClampedToZero) {
 }
 
 TEST(GpuMemory, SmallModelFormula) {
-  // m=10, n=20, nnz=50:
-  //   10*20*8 = 1600   n-vecs
-  //    9*10*8 =  720   m-vecs
-  //         8 =    8   scalar
-  //    (10+1)*4 = 44   rowptr
+  // m=10, n=20, nnz=50 (GpuState layout after #382):
+  //    9*20*8 = 1440   n-vecs (d_x,d_xn,d_ext,d_dx,d_aty,d_xsum,d_cost,d_clo,d_chi)
+  //    8*10*8 =  640   m-vecs (d_y,d_yn,d_dy,d_ax,d_adx,d_ysum,d_rlo,d_rhi)
+  //       3*8 =   24   scalars (d_scalars[3]: mv_x, mv_y, interaction)
+  //  (10+1)*4 =   44   rowptr
   //    50*4   =  200   colidx
   //    50*8   =  400   vals
   //  16*1024^2        library overhead
   constexpr std::size_t kOverhead = 16ULL * 1024 * 1024;
-  constexpr std::size_t expected = 1600 + 720 + 8 + 44 + 200 + 400 + kOverhead;
+  constexpr std::size_t expected = 1440 + 640 + 24 + 44 + 200 + 400 + kOverhead;
   EXPECT_EQ(estimate_pdhg_gpu_memory(10, 20, 50), expected);
 }
 
 TEST(GpuMemory, LargeModelIsInMibRange) {
   // 100k rows, 200k cols, 1M nonzeros: sparse storage ≈ 50 MiB (not GiB — the matrix is
-  // sparse). n-vecs: 10*200k*8=16 MiB; m-vecs: 9*100k*8=7.2 MiB; CSR: ~12 MiB; 16 MiB
+  // sparse). n-vecs: 9*200k*8=14.4 MiB; m-vecs: 8*100k*8=6.4 MiB; CSR: ~12 MiB; 16 MiB
   // overhead. The estimate must exceed 40 MiB, well above the 16 MiB overhead constant alone.
   const std::size_t est = estimate_pdhg_gpu_memory(100000, 200000, 1000000);
   constexpr std::size_t k40Mib = 40ULL * 1024 * 1024;

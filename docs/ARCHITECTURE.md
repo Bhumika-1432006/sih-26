@@ -246,8 +246,10 @@ deterministic mode and written to every stats blob as `model.fingerprint`. It ha
 patterns, so -0.0 and 0.0 are different inputs, and it ignores names, because two models
 that differ only in what their columns are called solve identically.
 
-The GPU path is out of scope here: `src/gpu/` is guarded by `SANKHYA_ENABLE_CUDA` and this
-mode makes no claim about CUDA reductions. `docs/PS26119_COVERAGE.md` says what exists.
+The GPU path refuses `deterministic=true` (#383): the fused `atomicAdd` reductions in the
+CUDA kernels are order-dependent and cannot satisfy the bit-for-bit promise. When
+`deterministic=true` and the GPU path would otherwise be selected, `solve()` logs a warning
+and falls back to CPU PDHG. `docs/PS26119_COVERAGE.md` says what exists.
 
 ## 8. Resource limits, and what each one means
 
