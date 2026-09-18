@@ -20,6 +20,7 @@
 
 #ifdef SANKHYA_ENABLE_CUDA
 #include "gpu/device.hpp"
+#include "gpu/pdhg_gpu.hpp"
 #endif
 
 #include <fmt/format.h>
@@ -669,6 +670,14 @@ Solution solve_unguarded(const Model& model, const Options& options, SolveContro
             std::isfinite(time_limit)) {
           first_pass.set_double("time_limit", time_limit * kPdhgShareOfTheTimeLimit);
         }
+#ifdef SANKHYA_ENABLE_CUDA
+        if (options.get_bool("gpu")) {
+          // GPU path: solve_pdhg_gpu probes the device and falls back to CPU when absent
+          Solution first = gpu::solve_pdhg_gpu(target, first_pass, logger, control);
+          polish_with_the_interior_point(&first, target, options, logger, control, timer);
+          return first;
+        }
+#endif
         Solution first = pdhg::solve_pdhg(target, first_pass, logger, control);
         polish_with_the_interior_point(&first, target, engine_options, logger, control, timer);
         return first;
@@ -722,23 +731,14 @@ Solution solve_unguarded(const Model& model, const Options& options, SolveContro
       return solution;
     }
 
-    if (options.get_bool("gpu")) {
-#ifdef SANKHYA_ENABLE_CUDA
-      // CUDA compiled in: probe the device before touching it. If none is found, fall
-      // through to the CPU path below and say why. Kernels land in #17; until then the
-      // CPU engine runs regardless of whether a device is present.
-      std::string device_desc;
-      if (gpu::device_available(&device_desc)) {
-        logger.info("GPU: {} — kernels arrive in #17; solving on CPU until then", device_desc);
-      } else {
-        logger.warning("--gpu requested but no CUDA device is available: {}; running on CPU",
-                       device_desc);
-      }
-#else
-      // Per ENGINEERING_RULES.md: the CPU build works with zero CUDA installed; --gpu
-      // must never crash.
+    if (options.get_bool("gpu") && !want_pdhg) {
+      // --gpu is only supported with --algorithm pdhg (issue #17). For all other engines
+      // the flag is silently ignored and the CPU path runs; the GPU path is routed above.
+#ifndef SANKHYA_ENABLE_CUDA
       logger.warning(
           "--gpu requested but this build has no CUDA backend compiled in; running on CPU");
+#else
+      logger.warning("--gpu is only supported with --algorithm pdhg; running on CPU");
 #endif
     }
 
