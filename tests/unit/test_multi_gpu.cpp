@@ -2,11 +2,22 @@
 // SANKHYA - unit tests for multi-GPU partitioning and device utilities (#295).
 //
 // The partition and option-parsing tests are CPU-only and run without a CUDA device.
-// The device enumeration tests are guarded by SANKHYA_ENABLE_CUDA.
+// The device enumeration and solver tests are guarded by SANKHYA_ENABLE_CUDA.
+
+#include <filesystem>
 
 #include <gtest/gtest.h>
 
 #include "gpu/multi_device.hpp"
+#include "sankhya/io.hpp"
+#include "sankhya/logging.hpp"
+#include "sankhya/model.hpp"
+#include "sankhya/options.hpp"
+
+#ifdef SANKHYA_ENABLE_CUDA
+#include "gpu/pdhg_gpu.hpp"
+#include "gpu/pdhg_multi_gpu.hpp"
+#endif
 
 namespace sankhya {
 namespace {
@@ -159,7 +170,7 @@ TEST(MultiGpu, LocalMIsCorrect) {
   EXPECT_EQ(p.local_m(), 10);
 }
 
-// ---- CUDA-only tests (device_count, can_peer_access) ---------------------
+// ---- CUDA-only tests (device_count, can_peer_access, solver) -------------
 #ifdef SANKHYA_ENABLE_CUDA
 
 TEST(MultiGpu, DeviceCountNonNegative) {
@@ -169,6 +180,51 @@ TEST(MultiGpu, DeviceCountNonNegative) {
 TEST(MultiGpu, PeerAccessSelfIsTrue) {
   const int cnt = gpu::device_count();
   for (int i = 0; i < cnt; ++i) EXPECT_TRUE(gpu::can_peer_access(i, i));
+}
+
+// Evidence test: solve_pdhg_multi_gpu actually runs (reviewer item 3).
+//
+// Uses device_ids = {0, 0}: two virtual partitions on the same physical GPU.
+// This exercises the full multi-GPU code path (row partitioning, per-device cuSPARSE
+// SpMVs, host-mediated allreduce) without needing a second physical GPU.
+// The result is compared against the single-GPU solver to prove correctness.
+TEST(MultiGpu, SolveTwoVirtualDevicesMatchesSingleGpu) {
+  if (gpu::device_count() == 0) {
+    GTEST_SKIP() << "no CUDA device present";
+  }
+
+  const std::string path =
+      (std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() /
+       "data/netlib/afiro.mps")
+          .string();
+  Model model;
+  const io::ReadResult r = io::read_model(path, &model);
+  ASSERT_TRUE(r.ok) << path << ": " << r.error;
+
+  Options opts;
+  opts.set_bool("log_to_console", false);
+  opts.set_double("pdhg_tolerance", 1e-6);
+  opts.set_bool("pdhg_polish", false);
+  opts.set_int("iteration_limit", 500000);
+
+  Logger silent(nullptr);
+
+  // Single-GPU reference.
+  const Solution single = gpu::solve_pdhg_gpu(model, opts, silent);
+  if (single.algorithm.find("cuda") == std::string::npos &&
+      single.algorithm.find("gpu") == std::string::npos) {
+    GTEST_SKIP() << "CUDA backend not in this build (algorithm=\"" << single.algorithm << "\")";
+  }
+  ASSERT_EQ(single.status, SolveStatus::kOptimal) << single.message;
+
+  // Multi-GPU path with {0, 0}: rows are split into two halves, both run on device 0.
+  const Solution multi = gpu::solve_pdhg_multi_gpu(model, opts, {0, 0}, silent);
+  EXPECT_EQ(multi.algorithm, "pdhg-cuda-multi") << "multi-GPU code path did not execute";
+  ASSERT_EQ(multi.status, SolveStatus::kOptimal) << multi.message;
+
+  const double scale = std::max(1.0, std::fabs(single.objective));
+  EXPECT_NEAR(multi.objective, single.objective, 1e-5 * scale)
+      << "multi-GPU objective diverged from single-GPU";
 }
 
 #endif  // SANKHYA_ENABLE_CUDA
