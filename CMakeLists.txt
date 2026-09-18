@@ -258,7 +258,9 @@ if(SANKHYA_ENABLE_CUDA)
   find_package(CUDAToolkit REQUIRED)
   # Collect every .cu file under src/gpu/ so adding a new kernel needs no CMake edit.
   file(GLOB SANKHYA_GPU_SOURCES "src/gpu/*.cu")
-  target_sources(sankhya_objects PRIVATE ${SANKHYA_GPU_SOURCES})
+  # gpu_memory.cpp is plain C++20 (no device code) so it is listed explicitly rather than
+  # relying on the .cu glob.
+  target_sources(sankhya_objects PRIVATE ${SANKHYA_GPU_SOURCES} src/gpu/gpu_memory.cpp)
   # Explicitly pin arch and standard on the target: sankhya_objects was created before
   # CUDA was enabled so it may have inherited the project-wide C++20 requirement.
   # The global CMAKE_CUDA_STANDARD only applies to targets created after it is set.

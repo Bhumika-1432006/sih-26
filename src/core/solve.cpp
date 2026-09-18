@@ -20,6 +20,7 @@
 
 #ifdef SANKHYA_ENABLE_CUDA
 #include "gpu/device.hpp"
+#include "gpu/gpu_memory.hpp"
 #include "gpu/pdhg_gpu.hpp"
 #endif
 
@@ -663,6 +664,31 @@ Solution solve_unguarded(const Model& model, const Options& options, SolveContro
     const bool want_pdhg = chosen.algorithm == "pdhg";
     const bool want_ipm = chosen.algorithm == "ipm";
     const bool want_dual = chosen.algorithm == "dual-simplex";
+
+    // VRAM check (#281): before committing to GPU PDHG, verify the model fits in available
+    // device memory. Falls back to CPU PDHG with a diagnostic when it does not.
+    bool use_gpu_pdhg = chosen.use_gpu || options.get_bool("gpu");
+#ifdef SANKHYA_ENABLE_CUDA
+    if (use_gpu_pdhg && want_pdhg) {
+      std::size_t free_bytes = 0, total_bytes = 0;
+      if (gpu::device_free_memory(&free_bytes, &total_bytes)) {
+        const std::size_t required = gpu::estimate_pdhg_gpu_memory(
+            model.num_rows(), model.num_cols(), model.num_nonzeros());
+        const std::size_t reserve = gpu::vram_reserve(total_bytes);
+        logger.info(
+            "GPU PDHG memory: required {:.0f} MiB, available {:.0f} MiB, reserve {:.0f} MiB",
+            required / 1048576.0, free_bytes / 1048576.0, reserve / 1048576.0);
+        if (required + reserve > free_bytes) {
+          logger.warning(
+              "GPU PDHG: estimated {:.0f} MiB + {:.0f} MiB reserve exceeds {:.0f} MiB free "
+              "VRAM; falling back to CPU PDHG",
+              required / 1048576.0, reserve / 1048576.0, free_bytes / 1048576.0);
+          use_gpu_pdhg = false;
+        }
+      }
+    }
+#endif
+
     // One place runs the engine on whichever model - reduced or original - is being solved,
     // so the polish of a PDHG answer happens before postsolve in both cases.
     const auto run_lp_engine = [&](const Model& target) -> Solution {
@@ -680,9 +706,10 @@ Solution solve_unguarded(const Model& model, const Options& options, SolveContro
           first_pass.set_double("time_limit", time_limit * kPdhgShareOfTheTimeLimit);
         }
 #ifdef SANKHYA_ENABLE_CUDA
-        if (chosen.use_gpu || options.get_bool("gpu")) {
-          // GPU path: auto-routed by size:pdhg-gpu, or explicit --gpu flag.
-          // solve_pdhg_gpu probes the device itself and falls back to CPU when absent.
+        if (use_gpu_pdhg) {
+          // GPU path: auto-routed by size:pdhg-gpu, or explicit --gpu flag (both gated by the
+          // VRAM check above). solve_pdhg_gpu probes the device itself and falls back to CPU
+          // when absent.
           Solution first = gpu::solve_pdhg_gpu(target, first_pass, logger, control);
           polish_with_the_interior_point(&first, target, options, logger, control, timer);
           return first;
