@@ -19,6 +19,8 @@
 
 #include "pdhg_multi_gpu.hpp"
 
+#include "../pdhg/pdhg_evaluate.hpp"
+
 #include <cuda_runtime.h>
 #include <cusparse.h>
 #include <cub/block/block_reduce.cuh>
@@ -252,133 +254,10 @@ static bool spmv_t_mg(DeviceState& d, double* d_in_m, double* d_out_n) {
   return true;
 }
 
-// ---- Convergence evaluation (CPU, from papers) ---------------------------
-
-struct Residuals {
-  double primal = 0.0, dual = 0.0, gap = 0.0;
-  double primal_objective = 0.0, dual_objective = 0.0;
-  double absolute_primal = 0.0, absolute_dual = 0.0;
-  double gap_as_verified = 0.0, complementarity = 0.0;
-  [[nodiscard]] double worst() const { return std::max({primal, dual, gap}); }
-  [[nodiscard]] bool meets_request(double tol) const {
-    return primal <= tol && dual <= tol && gap <= tol &&
-           absolute_primal <= tol::kPrimalFeasibility;
-  }
-  [[nodiscard]] bool meets_project_standard() const {
-    return absolute_primal <= tol::kPrimalFeasibility &&
-           absolute_dual <= tol::kDualFeasibility && gap_as_verified <= tol::kDualityGap &&
-           complementarity <= 1e-6;
-  }
-};
-
-struct Problem {
-  const Model* model = nullptr;
-  std::vector<double> cost;
-  double bound_norm = 0.0, cost_norm = 0.0;
-};
-
-static double euclidean_norm_mg(const std::vector<double>& v) {
-  double s = 0.0;
-  for (double x : v) s += x * x;
-  return std::sqrt(s);
-}
-
-static Residuals evaluate_mg(const Problem& prob, const std::vector<double>& x,
-                               const std::vector<double>& y, std::vector<double>& activity,
-                               std::vector<double>& reduced) {
-  const Model& model = *prob.model;
-  const Index rows = model.num_rows();
-  const Index cols = model.num_cols();
-  Residuals r;
-
-  activity.assign(static_cast<std::size_t>(rows), 0.0);
-  if (rows > 0) model.matrix.multiply(x.data(), activity.data());
-  double primal_viol = 0.0;
-  for (Index i = 0; i < rows; ++i) {
-    const auto u = static_cast<std::size_t>(i);
-    const double a = activity[u];
-    double v = 0.0;
-    if (is_finite_bound(model.row_lower[u])) v = std::max(v, model.row_lower[u] - a);
-    if (is_finite_bound(model.row_upper[u])) v = std::max(v, a - model.row_upper[u]);
-    primal_viol += v * v;
-  }
-  r.absolute_primal = std::sqrt(primal_viol);
-  r.primal = r.absolute_primal / (1.0 + prob.bound_norm);
-
-  reduced.assign(static_cast<std::size_t>(cols), 0.0);
-  for (Index j = 0; j < cols; ++j)
-    reduced[static_cast<std::size_t>(j)] = prob.cost[static_cast<std::size_t>(j)];
-  if (rows > 0) model.matrix.transpose_multiply_add(y.data(), reduced.data());
-
-  double dual_viol = 0.0, bound_contrib = 0.0;
-  for (Index j = 0; j < cols; ++j) {
-    const auto u = static_cast<std::size_t>(j);
-    const double dval = reduced[u];
-    if (dval > 0.0) {
-      if (is_finite_bound(model.col_lower[u]))
-        bound_contrib += dval * model.col_lower[u];
-      else
-        dual_viol += dval * dval;
-    } else if (dval < 0.0) {
-      if (is_finite_bound(model.col_upper[u]))
-        bound_contrib += dval * model.col_upper[u];
-      else
-        dual_viol += dval * dval;
-    }
-  }
-  double support = 0.0;
-  for (Index i = 0; i < rows; ++i) {
-    const auto u = static_cast<std::size_t>(i);
-    const double yi = y[u];
-    if (yi > 0.0) {
-      if (is_finite_bound(model.row_upper[u]))
-        support += yi * model.row_upper[u];
-      else
-        dual_viol += yi * yi;
-    } else if (yi < 0.0) {
-      if (is_finite_bound(model.row_lower[u]))
-        support += yi * model.row_lower[u];
-      else
-        dual_viol += yi * yi;
-    }
-  }
-  r.absolute_dual = std::sqrt(dual_viol);
-  r.dual = r.absolute_dual / (1.0 + prob.cost_norm);
-
-  for (Index i = 0; i < rows; ++i) {
-    const auto u = static_cast<std::size_t>(i);
-    if (model.row_lower[u] == model.row_upper[u]) continue;
-    const double lo_sl = is_finite_bound(model.row_lower[u])
-                             ? activity[u] - model.row_lower[u]
-                             : std::numeric_limits<double>::infinity();
-    const double hi_sl = is_finite_bound(model.row_upper[u])
-                             ? model.row_upper[u] - activity[u]
-                             : std::numeric_limits<double>::infinity();
-    r.complementarity = std::max(r.complementarity, std::fabs(y[u]) * std::min(lo_sl, hi_sl));
-  }
-  for (Index j = 0; j < cols; ++j) {
-    const auto u = static_cast<std::size_t>(j);
-    if (model.col_lower[u] == model.col_upper[u]) continue;
-    const double lo_sl = is_finite_bound(model.col_lower[u])
-                             ? x[u] - model.col_lower[u]
-                             : std::numeric_limits<double>::infinity();
-    const double hi_sl = is_finite_bound(model.col_upper[u])
-                             ? model.col_upper[u] - x[u]
-                             : std::numeric_limits<double>::infinity();
-    r.complementarity =
-        std::max(r.complementarity, std::fabs(reduced[u]) * std::min(lo_sl, hi_sl));
-  }
-
-  double pobj = 0.0;
-  for (Index j = 0; j < cols; ++j)
-    pobj += prob.cost[static_cast<std::size_t>(j)] * x[static_cast<std::size_t>(j)];
-  r.primal_objective = pobj;
-  r.dual_objective = bound_contrib - support;
-  const double abs_gap = std::fabs(pobj - r.dual_objective);
-  r.gap = abs_gap / (1.0 + std::fabs(pobj) + std::fabs(r.dual_objective));
-  r.gap_as_verified = abs_gap / std::max(1.0, std::fabs(pobj));
-  return r;
-}
+using pdhg::euclidean_norm;
+using pdhg::evaluate;
+using pdhg::Problem;
+using pdhg::Residuals;
 
 // ---- Device setup --------------------------------------------------------
 // Build a local CSR slice for rows [row_start, row_end) from the full scaled CsrView.
@@ -557,7 +436,7 @@ Solution solve_pdhg_multi_gpu(const Model& model, const Options& options,
   for (Index j = 0; j < cols; ++j)
     prob.cost[static_cast<std::size_t>(j)] =
         sense * model.col_cost[static_cast<std::size_t>(j)];
-  prob.cost_norm = euclidean_norm_mg(prob.cost);
+  prob.cost_norm = euclidean_norm(prob.cost);
   {
     double bsq = 0.0;
     for (Index i = 0; i < rows; ++i) {
@@ -878,7 +757,7 @@ Solution solve_pdhg_multi_gpu(const Model& model, const Options& options,
 
     unscale(h_x, h_y);
     std::vector<double> cur_x = x_unscaled, cur_y = y_unscaled;
-    const Residuals cur = evaluate_mg(prob, cur_x, cur_y, activity, reduced_costs);
+    const Residuals cur = evaluate(prob, cur_x, cur_y, activity, reduced_costs);
 
     const Residuals* chosen = &cur;
     const std::vector<double>* chosen_x = &cur_x;
@@ -903,7 +782,7 @@ Solution solve_pdhg_multi_gpu(const Model& model, const Options& options,
       unscale(xav, yav);
       avg_x = x_unscaled;
       avg_y = y_unscaled;
-      avg = evaluate_mg(prob, avg_x, avg_y, activity, reduced_costs);
+      avg = evaluate(prob, avg_x, avg_y, activity, reduced_costs);
       if (avg.worst() < cur.worst()) {
         chosen = &avg;
         chosen_x = &avg_x;
@@ -947,7 +826,7 @@ Solution solve_pdhg_multi_gpu(const Model& model, const Options& options,
         std::vector<double> dx_rs(n), dy_rs(m);
         for (std::size_t j = 0; j < n; ++j) dx_rs[j] = h_x[j] - x_restart[j];
         for (std::size_t i = 0; i < m; ++i) dy_rs[i] = h_y[i] - y_restart[i];
-        const double dxn = euclidean_norm_mg(dx_rs), dyn = euclidean_norm_mg(dy_rs);
+        const double dxn = euclidean_norm(dx_rs), dyn = euclidean_norm(dy_rs);
         if (dxn > 1e-12 && dyn > 1e-12) {
           constexpr double theta = 0.5;
           omega = std::exp(theta * std::log(dyn / dxn) + (1.0 - theta) * std::log(omega));
@@ -989,7 +868,7 @@ Solution solve_pdhg_multi_gpu(const Model& model, const Options& options,
     solution.col_value[static_cast<std::size_t>(j)] =
         best_x.empty() ? 0.0 : best_x[static_cast<std::size_t>(j)];
 
-  const Residuals final_r = evaluate_mg(prob, best_x, best_y, activity, reduced_costs);
+  const Residuals final_r = evaluate(prob, best_x, best_y, activity, reduced_costs);
   for (Index j = 0; j < cols; ++j)
     solution.col_dual[static_cast<std::size_t>(j)] =
         sense * reduced_costs[static_cast<std::size_t>(j)];
