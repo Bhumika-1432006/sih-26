@@ -19,6 +19,7 @@ import datetime
 import json
 import platform
 import random
+import re
 import subprocess
 import sys
 import tempfile
@@ -31,9 +32,27 @@ RESULTS_DIR = REPO_ROOT / "bench" / "results"
 CSV_COLUMNS = [
     "instance", "rows", "cols", "nnz", "algorithm", "tolerance",
     "status", "objective", "published_objective", "relative_error",
-    "iterations", "seconds", "reached_tolerance",
-    "git_commit", "machine", "timestamp_utc",
+    "iterations", "seconds", "wall_seconds", "reached_tolerance",
+    "git_commit", "machine", "gpu", "timestamp_utc",
 ]
+
+# THE TWO ENGINES ARE COMPARED ON THE SAME WORK. `algorithm=pdhg` alone hands a finished
+# PDHG answer to the interior point for a polish (`pdhg_polish`, #229) on both paths, so
+# the first measurement of this script compared PDHG-plus-polish against PDHG-plus-polish
+# and every CPU row reached 1e-12 whatever the tolerance asked for. The polish is off here:
+# what is timed is PDHG to the requested tolerance and nothing else, from the solver's own
+# clock (`effort.solve_seconds` in the stats blob), so process start-up and the MPS read
+# are not in the number. A first GPU solve also pays CUDA's context creation once per
+# process, which is a property of the driver and not of the algorithm: every size's GPU
+# measurements are preceded by a warm-up solve whose time is discarded, and the wall clock
+# is still recorded beside the solver clock so the overhead stays visible.
+# `pdhg_tolerance` on its own changes nothing looser than the project's absolute
+# tolerances (#180): the loop runs on until the point meets them, which is why the first
+# measurement had the same iteration count at 1e-4 and 1e-8. `pdhg_stop_at_request` makes
+# the requested tolerance the stopping rule, so the two columns measure two different
+# amounts of work.
+COMMON_OPTIONS = ["log_to_console=false", "algorithm=pdhg", "pdhg_polish=false",
+                  "pdhg_stop_at_request=true"]
 
 # Problem sizes: (rows, cols, nnz_per_col)
 SIZES = [
@@ -49,9 +68,26 @@ TOLERANCES = [1e-4, 1e-8]
 
 
 def git_commit() -> str:
+    """Short commit hash, "-dirty" appended when any tracked file is modified: a CSV that
+    cites a commit must have been produced by that commit's tree (the same rule as
+    netlib.py and scale.py)."""
     r = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO_ROOT,
                        capture_output=True, text=True, check=False)
-    return r.stdout.strip() or "unknown"
+    commit = r.stdout.strip() or "unknown"
+    status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"],
+                            cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+    if status.stdout.strip():
+        commit += "-dirty"
+    return commit
+
+
+def gpu_description(binary: Path) -> str:
+    """The device the binary sees, from `sankhya --version` (name, compute, VRAM), so the
+    CSV says which card produced it instead of the doc generator guessing."""
+    r = subprocess.run([str(binary), "--version"], capture_output=True, text=True,
+                       check=False)
+    match = re.search(r"GPU ([^)]*\))", r.stdout)
+    return match.group(1).strip() if match else r.stdout.strip()
 
 
 def as_number(value):
@@ -117,28 +153,27 @@ def run_solve(binary: Path, mps: Path, algorithm: str, tolerance: float,
     with tempfile.TemporaryDirectory() as tmp:
         stats = Path(tmp) / "s.json"
         # Both CPU and GPU use algorithm=pdhg; GPU adds gpu=true.
-        command = [
-            str(binary), "solve", str(mps),
-            "--stats", str(stats),
-            "--time-limit", str(time_limit),
-            "--option", "log_to_console=false",
-            "--option", "algorithm=pdhg",
-            "--option", f"pdhg_tolerance={tolerance:g}",
-        ]
+        command = [str(binary), "solve", str(mps), "--stats", str(stats),
+                   "--time-limit", str(time_limit)]
+        for option in COMMON_OPTIONS + [f"pdhg_tolerance={tolerance:g}"]:
+            command += ["--option", option]
         if algorithm == "pdhg-cuda":
             command += ["--option", "gpu=true"]
         started = time.perf_counter()
         subprocess.run(command, capture_output=True, text=True)
         seconds = time.perf_counter() - started
         if not stats.exists():
-            return {"status": "no_output", "objective": None, "iterations": "", "seconds": seconds}
+            return {"status": "no_output", "objective": None, "iterations": "",
+                    "seconds": seconds, "wall": seconds, "algorithm_used": algorithm}
         blob = json.loads(stats.read_text())
+        solver = as_number(blob.get("effort", {}).get("solve_seconds"))
         return {
             "status": blob.get("result", {}).get("status", "unknown"),
             "objective": as_number(blob.get("result", {}).get("objective")),
             "iterations": blob.get("effort", {}).get("iterations", ""),
             "algorithm_used": blob.get("result", {}).get("algorithm", algorithm),
-            "seconds": seconds,
+            "seconds": seconds if solver is None else solver,
+            "wall": seconds,
         }
 
 
@@ -153,6 +188,7 @@ def main() -> int:
 
     commit = git_commit()
     machine = f"{platform.system()}-{platform.machine()}"
+    gpu = gpu_description(args.binary)
     timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     rows: list[dict] = []
 
@@ -160,7 +196,7 @@ def main() -> int:
 
     print("GPU vs CPU PDHG crossover benchmark")
     print(f"binary: {args.binary}")
-    print(f"commit: {commit}  machine: {machine}\n")
+    print(f"commit: {commit}  machine: {machine}  gpu: {gpu}\n")
     print(f"{'size':>12}  {'alg':>12}  {'tol':>6}  {'status':>12}  {'seconds':>9}  {'iters':>8}  "
           f"{'speedup':>8}")
     print("-" * 80)
@@ -173,6 +209,9 @@ def main() -> int:
             optimum = generate_lp(nrows, ncols, nnz, args.seed, mps_path)
             nnz_total = nrows * nnz  # approximate
 
+            # Warm-up: the first CUDA call in a process creates the context (seconds on a
+            # laptop card); that is paid once here and thrown away.
+            run_solve(args.binary, mps_path, "pdhg-cuda", TOLERANCES[0], args.time_limit)
             for tol in TOLERANCES:
                 for alg in algorithms:
                     result = run_solve(args.binary, mps_path, alg, tol, args.time_limit)
@@ -188,15 +227,17 @@ def main() -> int:
                         "instance": f"kkt_{nrows}x{ncols}",
                         "rows": nrows, "cols": ncols, "nnz": nnz_total,
                         "algorithm": result.get("algorithm_used", alg),
-                        "tolerance": f"{tol:g}",
+                        "tolerance": f"{tol:.0e}",
                         "status": result["status"],
                         "objective": "" if obj is None else repr(obj),
                         "published_objective": repr(optimum),
                         "relative_error": "" if err is None else repr(err),
                         "iterations": result["iterations"],
                         "seconds": round(result["seconds"], 6),
+                        "wall_seconds": round(result["wall"], 6),
                         "reached_tolerance": int(result["status"] in ("optimal", "feasible")),
-                        "git_commit": commit, "machine": machine, "timestamp_utc": timestamp,
+                        "git_commit": commit, "machine": machine, "gpu": gpu,
+                        "timestamp_utc": timestamp,
                     })
 
                     speedup_str = f"{speedup:.2f}x" if alg != "pdhg-cpu" else "baseline"

@@ -1687,14 +1687,25 @@ def gpu_section(path: Path | None) -> str:
 
     commit = rows[0].get("git_commit", "unknown")
     machine = rows[0].get("machine", "unknown")
+    gpu = rows[0].get("gpu", "") or "not recorded"
+    if "-dirty" in commit:
+        return (f"`{path.name}` is stamped `{commit}`: produced from a modified tree, so it "
+                "cannot be cited. Re-run `bench/runners/gpu_report.py` on a clean checkout "
+                "of a commit on `main`." + chr(10))
 
     # Build a table: rows = sizes, cols = (cpu_1e-4, gpu_1e-4, speedup_1e-4, cpu_1e-8, ...)
     sizes = sorted({(int(r["rows"]), int(r["cols"])) for r in rows})
 
-    def lookup(nrows: int, ncols: int, alg: str, tol: str) -> dict | None:
+    def lookup(nrows: int, ncols: int, alg: str, tol: float) -> dict | None:
+        # The tolerance is compared as a number: the runner wrote "0.0001" once and this
+        # looked for "1e-04", and the 1e-4 columns of the table came out empty.
         for r in rows:
+            try:
+                same_tol = abs(float(r.get("tolerance", "nan")) - tol) <= 1e-3 * tol
+            except ValueError:
+                same_tol = False
             if (int(r.get("rows", 0)) == nrows and int(r.get("cols", 0)) == ncols
-                    and r.get("algorithm") == alg and r.get("tolerance") == tol):
+                    and r.get("algorithm") == alg and same_tol):
                 return r
         return None
 
@@ -1702,18 +1713,19 @@ def gpu_section(path: Path | None) -> str:
         f"Source CSV: `bench/results/{path.name}`  ",
         f"Commit `{commit}` · machine `{machine}`",
         "",
-        "The GPU backend (`algorithm=pdhg gpu=true`) has a fixed per-solve overhead for data "
-        "transfer and CUDA initialisation. For small problems that overhead dominates and the "
-        "CPU wins; as problem size grows the parallelism pays off.",
+        "Both columns time PDHG alone (`pdhg_polish=false`) on the solver's own clock, to the "
+        "tolerance named; a warm-up GPU solve absorbed CUDA's context creation before the "
+        "timed ones. The GPU pays a per-iteration launch and transfer cost that a small model "
+        "cannot amortise; the crossover is where the parallel products start to pay for it.",
         "",
         "| rows×cols | CPU 1e-4 (s) | GPU 1e-4 (s) | speedup | CPU 1e-8 (s) | GPU 1e-8 (s) | speedup |",
         "|----------:|-------------:|-------------:|--------:|-------------:|-------------:|--------:|",
     ]
     for nrows, ncols in sizes:
-        cpu4 = lookup(nrows, ncols, "pdhg-cpu", "1e-04") or lookup(nrows, ncols, "pdhg-cpu", "1e-4")
-        gpu4 = lookup(nrows, ncols, "pdhg-cuda", "1e-04") or lookup(nrows, ncols, "pdhg-cuda", "1e-4")
-        cpu8 = lookup(nrows, ncols, "pdhg-cpu", "1e-08") or lookup(nrows, ncols, "pdhg-cpu", "1e-8")
-        gpu8 = lookup(nrows, ncols, "pdhg-cuda", "1e-08") or lookup(nrows, ncols, "pdhg-cuda", "1e-8")
+        cpu4 = lookup(nrows, ncols, "pdhg-cpu", 1e-4)
+        gpu4 = lookup(nrows, ncols, "pdhg-cuda", 1e-4)
+        cpu8 = lookup(nrows, ncols, "pdhg-cpu", 1e-8)
+        gpu8 = lookup(nrows, ncols, "pdhg-cuda", 1e-8)
 
         def fmt_s(r: dict | None) -> str:
             return f"{float(r['seconds']):.3f}" if r else "—"
@@ -1734,7 +1746,7 @@ def gpu_section(path: Path | None) -> str:
 
     lines += [
         "",
-        "GPU: NVIDIA GeForce RTX 5050 Laptop GPU, compute 12.0, 8 GiB VRAM.  ",
+        f"GPU: {gpu}.  ",
         "Instances are synthetic KKT LPs with ~5 nonzeros per column (seed 42).",
         "",
     ]

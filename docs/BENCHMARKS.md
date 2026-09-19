@@ -353,22 +353,11 @@ The GPU backend (`algorithm=pdhg gpu=true`) offloads the matrix-vector products 
 Small problems spend more time on data transfer than on computation; the crossover point
 below is where the GPU overtakes the CPU.
 
-Source CSV: `bench/results/gpu-c21e52a.csv`  
-Commit `c21e52a` · machine `Windows-AMD64`
+Not yet run. Reproduce with:
 
-The GPU backend (`algorithm=pdhg gpu=true`) has a fixed per-solve overhead for data transfer and CUDA initialisation. For small problems that overhead dominates and the CPU wins; as problem size grows the parallelism pays off.
-
-| rows×cols | CPU 1e-4 (s) | GPU 1e-4 (s) | speedup | CPU 1e-8 (s) | GPU 1e-8 (s) | speedup |
-|----------:|-------------:|-------------:|--------:|-------------:|-------------:|--------:|
-| 200×200 | — | — | — | 0.101 | 3.468 | 0.03× |
-| 500×500 | — | — | — | 0.320 | 7.365 | 0.04× |
-| 1000×1000 | — | — | — | 0.097 | 0.804 | 0.12× |
-| 2000×2000 | — | — | — | 1.003 | 6.153 | 0.16× |
-| 5000×5000 | — | — | — | 0.779 | 1.403 | 0.56× |
-| 10000×10000 | — | — | — | 2.631 | 1.917 | **1.37×** |
-
-GPU: NVIDIA GeForce RTX 5050 Laptop GPU, compute 12.0, 8 GiB VRAM.  
-Instances are synthetic KKT LPs with ~5 nonzeros per column (seed 42).
+```
+python bench/runners/gpu_report.py --binary build_gpu/sankhya
+```
 
 ---
 
