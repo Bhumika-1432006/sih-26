@@ -353,11 +353,22 @@ The GPU backend (`algorithm=pdhg gpu=true`) offloads the matrix-vector products 
 Small problems spend more time on data transfer than on computation; the crossover point
 below is where the GPU overtakes the CPU.
 
-Not yet run. Reproduce with:
+Source CSV: `bench/results/gpu-dcfcb08.csv`  
+Commit `dcfcb08` · machine `Windows-AMD64`
 
-```
-python bench/runners/gpu_report.py --binary build_gpu/sankhya
-```
+Both columns time PDHG alone (`pdhg_polish=false`) on the solver's own clock, to the tolerance named; a warm-up GPU solve absorbed CUDA's context creation before the timed ones. The GPU pays a per-iteration launch and transfer cost that a small model cannot amortise; the crossover is where the parallel products start to pay for it.
+
+| rows×cols | CPU 1e-4 (s) | GPU 1e-4 (s) | speedup | CPU 1e-8 (s) | GPU 1e-8 (s) | speedup |
+|----------:|-------------:|-------------:|--------:|-------------:|-------------:|--------:|
+| 200×200 | 0.042 | 2.744 | 0.02× | 0.075 | 2.940 | 0.03× |
+| 500×500 | 0.117 | 4.618 | 0.03× | 0.161 | 6.056 | 0.03× |
+| 1000×1000 | 0.039 | 0.735 | 0.05× | 0.044 | 0.783 | 0.06× |
+| 2000×2000 | 0.720 | 7.785 | 0.09× | 0.721 | 5.330 | 0.14× |
+| 5000×5000 | 0.765 | 1.453 | 0.53× | 0.800 | 1.663 | 0.48× |
+| 10000×10000 | 2.787 | 2.285 | **1.22×** | 3.165 | 2.408 | **1.31×** |
+
+GPU: NVIDIA GeForce RTX 5050 Laptop GPU (compute 12.0, 8151 MiB VRAM).  
+Instances are synthetic KKT LPs with ~5 nonzeros per column (seed 42).
 
 ---
 
