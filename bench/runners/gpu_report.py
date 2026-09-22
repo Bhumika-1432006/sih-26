@@ -170,10 +170,13 @@ def run_solve(binary: Path, mps: Path, algorithm: str, tolerance: float,
         solver = as_number(blob.get("effort", {}).get("solve_seconds"))
         result = blob.get("result", {})
         msg = result.get("message", "")
-        # Parse residuals from the solver's own message; present in both optimal and
-        # feasible (met requested tolerance but not project standard) messages.
-        primal = re.search(r"absolute primal\s+([\d.e+\-]+)", msg)
-        dual = re.search(r",\s*dual\s+([\d.e+\-]+)", msg)
+        # Parse residuals from the solver's own message.
+        # optimal:  "...absolute primal P, dual D, relative gap G"
+        # feasible: "...(primal P vs ..., dual D vs ..., ...)"
+        primal = re.search(r"absolute primal\s+([\d.e+\-]+)", msg) or \
+                 re.search(r"\bprimal\s+([\d.e+\-]+)\s+vs", msg)
+        dual = re.search(r"absolute primal[\d.e+\-\s]+,\s*dual\s+([\d.e+\-]+)", msg) or \
+               re.search(r",\s*dual\s+([\d.e+\-]+)\s+vs", msg)
         return {
             "status": result.get("status", "unknown"),
             "objective": as_number(result.get("objective")),
