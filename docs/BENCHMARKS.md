@@ -347,6 +347,46 @@ A ratio above 1 means restarts saved iterations on that instance.
 
 ---
 
+### 1g. GPU PDHG crossover — when the GPU wins
+
+The GPU backend (`algorithm=pdhg gpu=true`) offloads the matrix-vector products to CUDA.
+Small problems spend more time on data transfer than on computation; the crossover point
+below is where the GPU overtakes the CPU.
+
+Source CSV: `bench/results/gpu-a4f02b1.csv`  
+Commit `a4f02b1` · machine `Windows-AMD64`
+
+Both columns time PDHG alone (`pdhg_polish=false`) on the solver's own clock, to the tolerance named; a warm-up GPU solve absorbed CUDA's context creation before the timed ones. The GPU pays a per-iteration launch and transfer cost that a small model cannot amortise; the crossover is where the parallel products start to pay for it.
+
+| rows×cols | CPU 1e-4 (s) | GPU 1e-4 (s) | speedup | CPU 1e-8 (s) | GPU 1e-8 (s) | speedup |
+|----------:|-------------:|-------------:|--------:|-------------:|-------------:|--------:|
+| 200×200 | 0.045 | 5.002 | 0.01× | 0.103 | 3.419 | 0.03× |
+| 500×500 | 0.119 | 1.235 | 0.10× | 0.172 | 4.891 | 0.04× |
+| 1000×1000 | 0.043 | 0.793 | 0.05× | 0.044 | 0.769 | 0.06× |
+| 2000×2000 | 0.725 | 3.946 | 0.18× | 0.728 | 6.015 | 0.12× |
+| 5000×5000 | 0.778 | 1.468 | 0.53× | 0.840 | 1.376 | 0.61× |
+| 10000×10000 | 2.779 | 1.703 | **1.63×** | 2.762 | 1.831 | **1.51×** |
+
+GPU: NVIDIA GeForce RTX 5050 Laptop GPU (compute 12.0, 8151 MiB VRAM).  
+Instances are synthetic KKT LPs with ~5 nonzeros per column (seed 42).
+
+#### 1e-8 ceiling — sizes PDHG does not drive to project standard
+
+Project standard: absolute primal ≤ 1e-7, dual ≤ 1e-7, gap ≤ 1e-8.  
+`feasible` means the solver met the *requested* 1e-8 tolerance but not all three project-standard thresholds. These are not dropped from the table.
+
+| rows×cols | engine | achieved primal | achieved dual |
+|----------:|--------|----------------:|--------------:|
+| 200×200 | CPU | 9.583e-08 | 0.000e+00 |
+| 200×200 | GPU | 4.348e-08 | 2.001e-17 |
+| 500×500 | CPU | 7.220e-08 | 0.000e+00 |
+| 500×500 | GPU | 1.005e-09 | 3.111e-13 |
+| 1000×1000 | CPU | 8.748e-08 | 0.000e+00 |
+| 2000×2000 | CPU | 9.897e-08 | 0.000e+00 |
+| 2000×2000 | GPU | 5.282e-08 | 1.543e-16 |
+
+---
+
 ### 1f. Scale — how far up this goes
 
 Every tier above is Netlib-sized: the largest instance in the full set has 12,230 columns, and
@@ -785,9 +825,7 @@ Reading the table: the `conditioning` cliff is `kZeroDrop` (`tolerances.hpp`), t
   The comparison in section 4 uses solver-internal time on both sides for that reason.
 - The failures in section 1b are real and are not going to be quietly dropped from a later
   edition of this file. Each one carries the issue tracking it.
-- One engine named in PS26119 is not measured on this page at all: the CUDA backend for
-  PDHG is on `main` (`src/gpu/`) and compiles in CI, but it has not run on a card, so there
-  is no GPU row here and none is claimed until #19's CSV exists. The interior-point method (`algorithm=ipm`, #56) is opt-in and produces no
+- The GPU PDHG backend is measured in section 1g. The interior-point method (`algorithm=ipm`, #56) is opt-in and produces no
   basis, so it is not the engine behind any Netlib or MIPLIB table above - sections 1f to
   1f.3 are the exception, where it appears beside the others: since the AMD ordering (#193)
   it reaches 5,000 rows on the random shape and 20,000 on the staircase, and solves the
