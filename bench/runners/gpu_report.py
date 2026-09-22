@@ -33,6 +33,7 @@ CSV_COLUMNS = [
     "instance", "rows", "cols", "nnz", "algorithm", "tolerance",
     "status", "objective", "published_objective", "relative_error",
     "iterations", "seconds", "wall_seconds", "reached_tolerance",
+    "primal_residual", "dual_residual",
     "git_commit", "machine", "gpu", "timestamp_utc",
 ]
 
@@ -167,13 +168,21 @@ def run_solve(binary: Path, mps: Path, algorithm: str, tolerance: float,
                     "seconds": seconds, "wall": seconds, "algorithm_used": algorithm}
         blob = json.loads(stats.read_text())
         solver = as_number(blob.get("effort", {}).get("solve_seconds"))
+        result = blob.get("result", {})
+        msg = result.get("message", "")
+        # Parse residuals from the solver's own message; present in both optimal and
+        # feasible (met requested tolerance but not project standard) messages.
+        primal = re.search(r"absolute primal\s+([\d.e+\-]+)", msg)
+        dual = re.search(r",\s*dual\s+([\d.e+\-]+)", msg)
         return {
-            "status": blob.get("result", {}).get("status", "unknown"),
-            "objective": as_number(blob.get("result", {}).get("objective")),
+            "status": result.get("status", "unknown"),
+            "objective": as_number(result.get("objective")),
             "iterations": blob.get("effort", {}).get("iterations", ""),
-            "algorithm_used": blob.get("result", {}).get("algorithm", algorithm),
+            "algorithm_used": result.get("algorithm", algorithm),
             "seconds": seconds if solver is None else solver,
             "wall": seconds,
+            "primal_residual": primal.group(1) if primal else "",
+            "dual_residual": dual.group(1) if dual else "",
         }
 
 
@@ -236,6 +245,8 @@ def main() -> int:
                         "seconds": round(result["seconds"], 6),
                         "wall_seconds": round(result["wall"], 6),
                         "reached_tolerance": int(result["status"] in ("optimal", "feasible")),
+                        "primal_residual": result.get("primal_residual", ""),
+                        "dual_residual": result.get("dual_residual", ""),
                         "git_commit": commit, "machine": machine, "gpu": gpu,
                         "timestamp_utc": timestamp,
                     })

@@ -1750,6 +1750,35 @@ def gpu_section(path: Path | None) -> str:
         "Instances are synthetic KKT LPs with ~5 nonzeros per column (seed 42).",
         "",
     ]
+
+    # Honest 1e-8 list: sizes where either engine returned 'feasible' (met requested
+    # tolerance but not the project's absolute standard) at 1e-8. Required by #19 and #422.
+    ceiling_rows = []
+    for nrows, ncols in sizes:
+        for alg_key, alg_label in [("pdhg-cpu", "CPU"), ("pdhg-cuda", "GPU")]:
+            r = lookup(nrows, ncols, alg_key, 1e-8)
+            if r and r.get("status") == "feasible":
+                primal = r.get("primal_residual", "")
+                dual = r.get("dual_residual", "")
+                ceiling_rows.append((nrows, ncols, alg_label, primal, dual))
+
+    if ceiling_rows:
+        lines += [
+            "#### 1e-8 ceiling — sizes PDHG does not drive to project standard",
+            "",
+            "Project standard: absolute primal ≤ 1e-7, dual ≤ 1e-7, gap ≤ 1e-8.  ",
+            "`feasible` means the solver met the *requested* 1e-8 tolerance but not all three "
+            "project-standard thresholds. These are not dropped from the table.",
+            "",
+            "| rows×cols | engine | achieved primal | achieved dual |",
+            "|----------:|--------|----------------:|--------------:|",
+        ]
+        for nrows, ncols, label, primal, dual in ceiling_rows:
+            p = primal if primal else "—"
+            d = dual if dual else "—"
+            lines.append(f"| {nrows}×{ncols} | {label} | {p} | {d} |")
+        lines.append("")
+
     return chr(10).join(lines)
 
 
