@@ -886,18 +886,18 @@ Solution solve_pdhg_multi_gpu(const Model& model, const Options& options,
     solution.status = SolveStatus::kOptimal;
     char buf[256];
     std::snprintf(buf, sizeof(buf),
-        "CUDA multi-GPU PDHG (%d devices) converged after %ld iterations and %ld restarts; "
+        "CUDA multi-GPU PDHG (%d devices) converged after %lld iterations and %lld restarts; "
         "absolute primal %.3e, dual %.3e, relative gap %.3e",
-        K, iteration, restarts, final_r.absolute_primal, final_r.absolute_dual,
+        K, (long long)iteration, (long long)restarts, final_r.absolute_primal, final_r.absolute_dual,
         final_r.gap_as_verified);
     solution.message = buf;
   } else if (converged) {
     solution.status = SolveStatus::kFeasible;
     char buf[256];
     std::snprintf(buf, sizeof(buf),
-        "CUDA multi-GPU PDHG (%d devices) met requested tolerance %.1e after %ld iterations "
+        "CUDA multi-GPU PDHG (%d devices) met requested tolerance %.1e after %lld iterations "
         "but NOT project standard",
-        K, tolerance, iteration);
+        K, tolerance, (long long)iteration);
     solution.message = buf;
   } else {
     solution.status =
@@ -907,8 +907,8 @@ Solution solve_pdhg_multi_gpu(const Model& model, const Options& options,
     char buf[256];
     std::snprintf(buf, sizeof(buf),
         "CUDA multi-GPU PDHG (%d devices) stopped at relative primal %.3e, dual %.3e, "
-        "gap %.3e after %ld iterations and %ld restarts (target %.1e)",
-        K, final_r.primal, final_r.dual, final_r.gap, iteration, restarts, tolerance);
+        "gap %.3e after %lld iterations and %lld restarts (target %.1e)",
+        K, final_r.primal, final_r.dual, final_r.gap, (long long)iteration, (long long)restarts, tolerance);
     solution.message = buf;
   }
 
