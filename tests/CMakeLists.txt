@@ -13,6 +13,7 @@ add_executable(sankhya_tests
   unit/test_arena.cpp
   unit/test_c_api.cpp
   unit/test_c_api_certificates.cpp
+  unit/test_c_api_ranging_iis_pool.cpp
   unit/test_certificate.cpp
   unit/test_cuts.cpp
   unit/test_non_finite.cpp
@@ -35,6 +36,7 @@ add_executable(sankhya_tests
   unit/test_ipm.cpp
   unit/test_crossover.cpp
   unit/test_engine_selection.cpp
+  unit/test_solver_engine.cpp
   unit/test_warm_start.cpp
   unit/test_writer.cpp
   unit/test_iis.cpp
@@ -47,12 +49,14 @@ add_executable(sankhya_tests
   unit/test_qp.cpp
   unit/test_convexity_sparse.cpp
   unit/test_branch_and_bound.cpp
+  unit/test_mip_components.cpp
   unit/test_node_selection.cpp
   unit/test_solution_pool.cpp
   unit/test_conflict.cpp
   unit/test_heuristics.cpp
   unit/test_combinatorial_cuts.cpp
   unit/test_checkpoint.cpp
+  unit/test_parallel_tree.cpp
   unit/test_profiler.cpp
   unit/test_expression.cpp
   unit/test_nonlinear_model.cpp

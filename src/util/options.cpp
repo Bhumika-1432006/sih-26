@@ -137,6 +137,10 @@ const std::vector<OptionSpec>& Options::registry() {
                  "no basis and does not certify infeasibility or unboundedness).",
                  0.0,
                  0.0,
+                 // "auto" plus SolverRegistry::algorithm_names() (src/solver_engine), which
+                 // this table cannot ask without src/util depending on the engines; the test
+                 // OptionsAndRegistry.AlgorithmChoicesAreAutoPlusTheRegistrysAlgorithmNames
+                 // fails the moment the two disagree (#297).
                  {"auto", "simplex", "dual-simplex", "pdhg", "ipm"}});
     s.push_back({"mip_branching",
                  OptionType::String,
@@ -159,6 +163,17 @@ const std::vector<OptionSpec>& Options::registry() {
                  0.0,
                  0.0,
                  {"hybrid", "best-bound", "depth-first", "best-estimate"}});
+    s.push_back({"mip_objective_integrality",
+                 OptionType::Bool,
+                 true,
+                 "Round every relaxation bound up to the next value an integer solution can "
+                 "take when the objective is known to be integral (#221): every costed column "
+                 "integer with an integer cost, or one continuous objective column bounded "
+                 "only by rows built from integer columns with integer coefficients. Off is "
+                 "for the A/B; the rounding is exact and changes no answer.",
+                 0.0,
+                 0.0,
+                 {}});
     s.push_back({"mip_node_engine",
                  OptionType::String,
                  std::string("dual"),
@@ -543,9 +558,11 @@ const std::vector<OptionSpec>& Options::registry() {
                  "MILP: learn from every node proved infeasible which of its branching "
                  "decisions were to blame, and prune later nodes that repeat them (#292). A "
                  "conflict is stored only after it is proved again from the global bounds. Off "
-                 "until a clean MIPLIB A/B on main says what it buys; the first run proved and "
-                 "reached the same instances, saved nodes on three and halved throughput on "
-                 "enlight8.",
+                 "by measurement: the A/B at 60 s on the 30 MIPLIB instances (#405, run on a "
+                 "branch commit, so not committed until repeated on main) reaches and proves "
+                 "the same 14 and 9 either way, takes the node count to 0.965x on the nine "
+                 "instances that finish, and to 0.938x in the same wall clock on the 21 that "
+                 "do not - nodes not reached, not search saved.",
                  0.0,
                  0.0,
                  {}});
@@ -557,6 +574,17 @@ const std::vector<OptionSpec>& Options::registry() {
                  0.0,
                  0.0,
                  {}});
+    s.push_back(
+        {"conflict_use",
+         OptionType::String,
+         std::string("propagate"),
+         "MILP: what the search does with a learned conflict (#292): propagate (default; "
+         "prune a node whose decisions contain it, and fix the one undecided literal "
+         "false), prune (only the first), or none (learn and store, use nothing: the "
+         "analysis's cost alone, for the ablation).",
+         0.0,
+         0.0,
+         {"propagate", "prune", "none"}});
     s.push_back({"conflict_max",
                  OptionType::Int,
                  std::int64_t{10000},
@@ -572,6 +600,20 @@ const std::vector<OptionSpec>& Options::registry() {
                  "conflicts rarely fire again.",
                  1.0,
                  1e6,
+                 {}});
+    s.push_back({"mip_threads",
+                 OptionType::Int,
+                 std::int64_t{1},
+                 "MILP: worker threads for the branch-and-bound tree (#222); each runs its own "
+                 "node LPs on subtrees the others give away, sharing the incumbent, the node "
+                 "count and the pool. 1 (default) is the sequential search; 0 means one per "
+                 "hardware core. The objective and status do not depend on it, the tree "
+                 "explored does. Ignored, with a note, for an MIQP, with pool_complete, with a "
+                 "checkpoint or resume, and in deterministic mode. node_limit may be overshot "
+                 "by at most one node per worker (each counts a node after exploring it), "
+                 "and conflict_out is not written.",
+                 0.0,
+                 256.0,
                  {}});
     s.push_back({"pool_diversity",
                  OptionType::Bool,

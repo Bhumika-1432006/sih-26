@@ -55,7 +55,7 @@ That seam is what makes a new engine a bounded piece of work: it has to produce 
 | `src/io/` | MPS (fixed and free, RANGES, negative-UP convention, MARKER blocks, gzip) and LP readers, the `.sol` writer and the `--stats` JSON writer | core | 2.2k |
 | `src/presolve/` | reductions (empty/fixed/singleton rows and columns, redundant rows, free-column singletons, doubleton equations, integer bound rounding) and the postsolve stack that reconstructs the primal and the DUAL of the original model | core, la | 1.8k |
 | `src/simplex/` | `simplex_core.hpp` — the state the two simplex loops share (basis, factors, pricing weights, perturbation, warm start); `primal_simplex.cpp` — bounded-variable revised primal simplex, composite phase 1, Devex pricing, textbook and Harris ratio tests, bound perturbation, basis repair; `dual_simplex.cpp` — bounded dual simplex, bound-flipping ratio test, dual Devex, artificial bounds, cost perturbation, hand-over to the primal loop; `dense_lu` — a dense reference used by tests | core, la | 3.2k |
-| `src/pdhg/` | restarted PDHG (PDLP-style), CPU; the GPU backend hangs off this path (`src/gpu/`, behind `SANKHYA_ENABLE_CUDA`, PR #274) | core, la | 0.7k |
+| `src/pdhg/` | restarted PDHG (PDLP-style), CPU; the CUDA backend hangs off this path (`src/gpu/`, behind `SANKHYA_ENABLE_CUDA`, on `main` since #329 and not yet measured on a card, #19) | core, la | 0.7k |
 | `src/ipm/` | Mehrotra predictor-corrector interior-point method on the normal equations, over the sparse LDLᵀ in `src/la/ldl.cpp`; no basis | core, la | 0.5k |
 | `src/qp/` | convexity check (Cholesky of the Hessian), Condat–Vũ first-order convex QP | core, la | 0.5k |
 | `src/mip/` | branch and bound: propagation, root diving, reliability branching with strong branching, warm-started dual node LPs, MIQP nodes through the QP engine; root cuts are PR #159 | core, simplex, qp | 1.3k |
@@ -155,6 +155,23 @@ it describes.
 
 ## 5. Where the next engines plug in
 
+**The engine registry** (#297, `src/solver_engine/`). Every engine is a `SolverEngine`: a
+name, the classes it accepts, what its answer carries (a basis, row duals, a certificate,
+a warm start taken, an interrupt honoured, a deterministic mode kept) and a sentence on
+what it is, registered once in `builtin_engines.cpp` as a thin wrapper over the existing
+`solve_*()` function. `solve()` asks the registry which LP engine runs (`engine::select()`,
+the rule table of #284) and whether it takes a starting basis, and the model's class is
+decided in one place, `engine::classify`, for the dispatcher and the registry alike.
+`sankhya engines` prints the table, `--format json` for scripts, with every flag read from
+the engine rather than typed beside it. The names `algorithm` accepts are the registry's
+`algorithm_names()`; the option table's own list is held to them by a test, since the
+option layer cannot ask the engines without depending on them. When `algorithm` names an
+LP engine for a MILP, QP or MIQP, the class's engine runs and the log and the answer's
+message say so rather than the request being dropped silently. Adding an engine is a
+wrapper and a registration line in `builtin_engines.cpp` and a branch in `solve()` for how
+to run it; `solve()` refuses a registered engine it has no branch for rather than running
+another under its name (#402).
+
 - **Interior-point method** (#56) — built: `src/ipm/` is one branch of the LP dispatcher
   over the sparse LDLᵀ in `src/la/ldl.cpp` (#70). On its own it produces a `Solution` without
   a basis, which the status guard and the verifier handle as they do for PDHG; by default
@@ -174,13 +191,15 @@ it describes.
   landed in #159 (`src/mip/cuts.cpp`) and single-row MIR cuts in #221
   (`src/mip/mir_cuts.cpp`), appended as rows of the working model before the search
   starts; the answer reports the root bound before and after the round. `enable_root_cuts`
-  is false by measurement: the three-way A/B at `5e78399` (off, root round, root plus
-  tree rounds) proves the same 9 of 30, saves nodes, and costs one published match at the
-  time limit; `docs/BENCHMARKS.md` section 2 carries the numbers.
+  is false by measurement: the three-way A/B at `078cb24` (`docs/BENCHMARKS.md` section 2)
+  has the off leg at 14 of 30 reached and 9 proved, the root round at 13 and 9 (one match
+  lost at the time limit, nodes 1.049x) and root plus tree rounds at 14 and 10
+  (`neos-3611689-kaihu` proved, nodes 0.920x). The tree leg is the first to gain a proof
+  without losing one; whether it becomes the default is #221's open decision.
 - **Parallelism** — the column loops in pricing and in the sparse products are
   embarrassingly parallel and deterministic (no cross-thread reductions); the tree search is
   the larger prize and the harder one, because a race on the incumbent can fathom a node
-  that should have been explored (#57).
+  that should have been explored (#57). It is `mip_threads` since #222; section 12.
 
 ## 6. Toolchain, as tested
 
@@ -299,8 +318,10 @@ a bound only if a node proved one: an unevaluated root proves nothing.
 
 **Not implemented, and not pretended.** There is no memory limit and no GPU memory limit. Peak
 resident memory is not portably queryable from this binary, and `docs/PS26119_COVERAGE.md`
-says so rather than the option table carrying a knob that does nothing. The CUDA backend is
-not on `main`, so nothing here claims anything about device memory or kernel termination.
+says so rather than the option table carrying a knob that does nothing. The CUDA backend
+estimates whether the model fits in the device's memory before it starts and falls back to
+the CPU when it does not (#370); that estimate is the one device-memory claim made, and
+kernel termination is not a limit this section enforces.
 
 ## 9. Nonlinear models: the representation, before any engine
 
@@ -372,13 +393,49 @@ than guessed.
 
 `conflict_analysis` (#292, `src/mip/conflict.hpp`, `src/mip/branch_and_bound_conflicts.cpp`)
 learns, from each node proved infeasible, which of its branching decisions were to blame, and
-uses that in every later node's propagation. It is OFF by default. The one A/B run so far
-(the 30-instance MIPLIB set at 60 s, from a working tree before the commit, so an observation
-and not a citable benchmark) reached and proved the same 14 and 9 with it on and off, saved
-nodes on three of the proved instances (supportcase16 91 against 127, supportcase14 102
-against 124, flugpl 437 against 469) and cost throughput where infeasible nodes are cheap and
-many (enlight8 explored 23,040 nodes against 49,918). A clean A/B on `main` decides whether it
-turns on.
+uses that in every later node's propagation. It is OFF by default, and the second A/B run
+(#405) says why: the 30-instance MIPLIB set at 60 s, one commit, one machine,
+`conflict_analysis` the only difference. It was run on the closeout branch at `6c405f8`, a
+commit that is not on `main`, so its CSVs are not committed (the #256 rule, as in #340) and
+what follows is an observation until the same runner is repeated on `main` as a bench PR.
+
+`conflict_use` (#406) separates learning from use for that measurement: `none` learns and
+uses nothing (the analysis's cost alone), `prune` only prunes, `propagate` (the default) also
+fixes bounds; with `conflict_minimize` these are the five arms of the ablation #292 asks for.
+
+- **Nothing moved that must not move.** 14 of 30 reach the published optimum and 9 of 30 prove
+  it, in BOTH legs. No instance changed status, no matched or proved verdict moved, and no
+  feasible point was lost: the same 28 solutions pass independent verification either way
+  (`enlight8` and `enlight_hard` end at the limit with no incumbent in both legs).
+- **Where the search finishes, conflicts make it smaller.** Over the nine proved instances the
+  node count goes from 2,285 to 2,204 (0.965x) in 6.13 s against 5.67 s. Six are identical and
+  the whole movement is three instances: `supportcase16` 87 nodes against 123, `supportcase14`
+  102 against 115, `flugpl` 437 against 469.
+- **Where it does not finish, conflicts cost throughput.** The 21 instances stopped by the time
+  limit explore 1,900,912 nodes with conflicts on against 2,026,885 without (0.938x) - in the
+  SAME wall clock, so that is nodes not reached, not search saved. `enlight8` is the extreme at
+  0.373x: 46,704 nodes against 125,200, with 37.4 s of the 60 s budget spent inside the
+  analysis itself. Of the three incumbents that moved at the limit, two improved
+  (`timtab1` 1,149,285 against 1,217,806, `neos-5140963-mincio` 14,900 against 15,226) and one
+  worsened (`gen-ip054` 6,870.87 against 6,859.87).
+
+This CONFIRMS the pre-merge observation rather than revising it. That observation, made on a
+working tree before #381 and never citable, named four instances and this run reproduces every
+one in the same direction: `supportcase16` 91 against 127 then, 87 against 123 now;
+`supportcase14` 102 against 124 then, 102 against 115 now; `flugpl` 437 against 469 in both;
+`enlight8` fewer nodes in the same budget, 23,040 against 49,918 then and 46,704 against
+125,200 now. The default stays OFF: the measured benefit is 81 nodes over the
+nine instances that finish and no verdict either way, against up to 62 percent of a time
+budget on an instance whose infeasible nodes are cheap and many. The option is there for the
+instances that behave like `supportcase16`, and the default follows the measurement, as it does
+for the cut families.
+
+Conflict quality on three of them, from `conflict_out` at the same limit: `supportcase16`
+analysed 37 infeasible nodes, learned 35 (2 not proved from the global bounds), mean size 1.5,
+450 bounds tightened, 0.007 s; `flugpl` analysed and learned 146, mean size 3.7, 15 nodes
+pruned and 713 bounds tightened, 0.005 s; `enlight8` learned 6,783, mean size 7.3, 3,212 nodes
+pruned and 615,775 bounds tightened, 37.4 s. Short conflicts that tighten bounds are what pays;
+long ones on an instance that produces thousands of them are what does not.
 
 - **What is learned.** A set of bound literals `x_j <= v` / `x_j >= v` on integer columns,
   taken from the node's branching decisions, that the rows and the GLOBAL column bounds cannot
@@ -409,5 +466,33 @@ turns on.
 
 Conflicts live in the indices of the model the search runs on, which is the presolved model
 when presolve ran; they are solver metadata and are not mapped back. `conflict_out=<path>`
-writes them and their statistics as JSON for diagnostics, and the log's `Conflicts:` line and
-the profiler's `conflict analysis` region report their cost.
+writes them and their statistics as JSON for diagnostics, with the `columns` field naming the
+column count of the model the indices belong to, so a reader cannot quietly read them as the
+original model's. The log's `Conflicts:` line and the profiler's `conflict analysis` region
+report their cost.
+
+## 12. Parallel tree search
+
+`mip_threads=N` (#222, `src/mip/parallel_search.hpp`, `src/mip/branch_and_bound_parallel.cpp`)
+runs the branch and bound on N worker threads. Each worker runs the ordinary sequential
+search on one subtree at a time, with its own working model and node LPs. A subtree is a
+chain of bound changes from the root, so giving one away copies a few dozen numbers. The
+workers share the incumbent (every worker prunes against the best point anyone found), the
+node count (so `node_limit` covers the whole search), one solution pool, the pseudocosts
+(exchanged every 20 nodes), the node scaling (computed once), a queue of subtrees and a stop
+flag. A worker with at least eight open nodes gives the smallest-bound ones away whenever
+another worker is idle and the queue is empty, never its two newest nodes, which its dive is
+about to take. Each worker sets OpenMP's thread count to one when it starts: the count is per
+thread, and a new thread would otherwise fork a full team in every column loop.
+
+The answer does not depend on the thread count; the tree explored does. A subtree that stops
+early (a limit, or its own gap test) hands back the smallest bound among its open nodes, the
+reported bound is the smallest of everything left open anywhere, and optimality is claimed only
+when every subtree closed or met the gap target. The caller's progress callback is called from
+the calling thread only, and its interrupt is forwarded to the workers.
+
+Not taken, with a note in the log: an MIQP (QP node relaxations), `pool_complete` (its pruning
+reads the pool at every node), a checkpoint or resume (the file holds one search's tree) and
+`deterministic=true` (the tree varies with timing). `node_limit` can be overshot by at most one
+node per worker, because each counts a node before it checks. Root cuts, if enabled, are the
+root worker's own rows; other workers do not see them.
