@@ -353,19 +353,19 @@ The GPU backend (`algorithm=pdhg gpu=true`) offloads the matrix-vector products 
 Small problems spend more time on data transfer than on computation; the crossover point
 below is where the GPU overtakes the CPU.
 
-Source CSV: `bench/results/gpu-a4f02b1.csv`  
-Commit `a4f02b1` · machine `Windows-AMD64`
+Source CSV: `bench/results/gpu-fb72ab4.csv`  
+Commit `fb72ab4` · machine `Windows-AMD64`
 
 Both columns time PDHG alone (`pdhg_polish=false`) on the solver's own clock, to the tolerance named; a warm-up GPU solve absorbed CUDA's context creation before the timed ones. The GPU pays a per-iteration launch and transfer cost that a small model cannot amortise; the crossover is where the parallel products start to pay for it.
 
 | rows×cols | CPU 1e-4 (s) | GPU 1e-4 (s) | speedup | CPU 1e-8 (s) | GPU 1e-8 (s) | speedup |
 |----------:|-------------:|-------------:|--------:|-------------:|-------------:|--------:|
-| 200×200 | 0.045 | 5.002 | 0.01× | 0.103 | 3.419 | 0.03× |
-| 500×500 | 0.119 | 1.235 | 0.10× | 0.172 | 4.891 | 0.04× |
-| 1000×1000 | 0.043 | 0.793 | 0.05× | 0.044 | 0.769 | 0.06× |
-| 2000×2000 | 0.725 | 3.946 | 0.18× | 0.728 | 6.015 | 0.12× |
-| 5000×5000 | 0.778 | 1.468 | 0.53× | 0.840 | 1.376 | 0.61× |
-| 10000×10000 | 2.779 | 1.703 | **1.63×** | 2.762 | 1.831 | **1.51×** |
+| 200×200 | 0.027 | 2.495 | 0.01× | 0.068 | 3.365 | 0.02× |
+| 500×500 | 0.105 | 0.597 | 0.18× | 0.137 | 7.505 | 0.02× |
+| 1000×1000 | 0.040 | 0.738 | 0.05× | 0.041 | 0.602 | 0.07× |
+| 2000×2000 | 0.698 | 5.081 | 0.14× | 0.715 | 7.467 | 0.10× |
+| 5000×5000 | 0.784 | 1.436 | 0.55× | 0.770 | 1.635 | 0.47× |
+| 10000×10000 | 2.855 | 2.082 | **1.37×** | 2.929 | 1.903 | **1.54×** |
 
 GPU: NVIDIA GeForce RTX 5050 Laptop GPU (compute 12.0, 8151 MiB VRAM).  
 Instances are synthetic KKT LPs with ~5 nonzeros per column (seed 42).
@@ -378,12 +378,12 @@ Project standard: absolute primal ≤ 1e-7, dual ≤ 1e-7, gap ≤ 1e-8.
 | rows×cols | engine | achieved primal | achieved dual |
 |----------:|--------|----------------:|--------------:|
 | 200×200 | CPU | 9.583e-08 | 0.000e+00 |
-| 200×200 | GPU | 4.348e-08 | 2.001e-17 |
+| 200×200 | GPU | 5.652e-08 | 5.194e-17 |
 | 500×500 | CPU | 7.220e-08 | 0.000e+00 |
-| 500×500 | GPU | 1.005e-09 | 3.111e-13 |
+| 500×500 | GPU | 3.208e-08 | 8.831e-17 |
 | 1000×1000 | CPU | 8.748e-08 | 0.000e+00 |
+| 1000×1000 | GPU | 8.565e-08 | 8.532e-16 |
 | 2000×2000 | CPU | 9.897e-08 | 0.000e+00 |
-| 2000×2000 | GPU | 5.282e-08 | 1.543e-16 |
 
 ---
 
