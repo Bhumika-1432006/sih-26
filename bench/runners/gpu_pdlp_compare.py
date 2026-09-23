@@ -50,11 +50,14 @@ TOLERANCES = [1e-4, 1e-8]
 MITTELMANN_INSTANCES = ["chromaticindex1024-7", "brazil3"]
 
 # OR-Tools PDLP solver script, run as a subprocess to keep provenance clean.
+# Uses ortools.linear_solver.python.model_builder for MPS loading (the supported
+# Python API path) and SetSolverSpecificParametersAsString with a PDLP text proto
+# to set termination tolerances (PDLP ignores MPSolverParameters knobs).
 PDLP_RUNNER_SCRIPT = r"""
-import sys, time, json, math
+import sys, time, json
 try:
+    from ortools.linear_solver.python import model_builder as mb
     from ortools.linear_solver import pywraplp
-    from ortools.linear_solver.linear_solver_pb2 import MPModelProto, MPSolverParameters
 except ImportError:
     print(json.dumps({"error": "ortools not installed"}))
     sys.exit(1)
@@ -63,47 +66,34 @@ mps_file, tol_str, time_limit_str = sys.argv[1], sys.argv[2], sys.argv[3]
 tol = float(tol_str)
 time_limit = float(time_limit_str)
 
-solver = pywraplp.Solver.CreateSolver("PDLP")
+# Load MPS via the model_builder API (handles .mps and .mps.gz transparently).
+try:
+    model = mb.Model()
+    model.import_from_mps_file(mps_file)
+except Exception as exc:
+    print(json.dumps({"error": f"import_from_mps_file failed: {exc}"}))
+    sys.exit(1)
+
+solver = mb.ModelSolver("PDLP")
 if solver is None:
     print(json.dumps({"error": "PDLP not available in this ortools build"}))
     sys.exit(1)
 
-solver.SetTimeLimit(int(time_limit * 1000))
-# Termination tolerances
-params = MPSolverParameters()
-params.SetDoubleParam(MPSolverParameters.PRIMAL_TOLERANCE, tol)
-params.SetDoubleParam(MPSolverParameters.DUAL_TOLERANCE, tol)
-
-try:
-    with open(mps_file, "rb") as fh:
-        data = fh.read()
-    # Decompress if gzip
-    if data[:2] == b"\x1f\x8b":
-        import gzip
-        data = gzip.decompress(data)
-    if not solver.LoadModelFromNewFormat(data):
-        print(json.dumps({"error": "LoadModelFromNewFormat failed"}))
-        sys.exit(1)
-except Exception as exc:
-    print(json.dumps({"error": str(exc)}))
-    sys.exit(1)
+solver.set_time_limit_in_seconds(time_limit)
+# PDLP termination tolerances — must be set via solver-specific text proto;
+# MPSolverParameters knobs are not forwarded to PDLP.
+solver.set_solver_specific_parameters(
+    f"termination_criteria {{ eps_optimal_relative: {tol} eps_optimal_absolute: {tol} }}"
+)
 
 t0 = time.perf_counter()
-status = solver.Solve(params)
+result_status = solver.solve(model)
 elapsed = time.perf_counter() - t0
 
-status_map = {
-    pywraplp.Solver.OPTIMAL: "optimal",
-    pywraplp.Solver.FEASIBLE: "feasible",
-    pywraplp.Solver.INFEASIBLE: "infeasible",
-    pywraplp.Solver.UNBOUNDED: "unbounded",
-    pywraplp.Solver.ABNORMAL: "abnormal",
-    pywraplp.Solver.NOT_SOLVED: "not_solved",
-}
+feasible = result_status in (mb.SolveStatus.OPTIMAL, mb.SolveStatus.FEASIBLE)
 print(json.dumps({
-    "status": status_map.get(status, str(status)),
-    "objective": solver.Objective().Value() if status in (
-        pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE) else None,
+    "status": str(result_status).split(".")[-1].lower(),
+    "objective": solver.objective_value if feasible else None,
     "wall_seconds": elapsed,
 }))
 """
@@ -251,7 +241,7 @@ def main() -> int:
             ratio_str = "—"
             if pdlp["seconds"] and our["seconds"]:
                 ratio = pdlp["seconds"] / our["seconds"]
-                ratio_str = f"{ratio:.2f}x" if ratio > 1 else f"{ratio:.2f}x"
+                ratio_str = f"{ratio:.2f}x"
             print(f"{name:>30}  {'sankhya-gpu':>14}  {tol:>6.0e}  "
                   f"{our['status']:>12}  {our['seconds']:>9.3f}  {'—':>8}")
             print(f"{'':>30}  {'ortools-pdlp':>14}  {tol:>6.0e}  "
