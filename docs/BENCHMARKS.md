@@ -781,6 +781,33 @@ python bench/runners/netlib_infeasible.py --time-limit 60
 python bench/runners/netlib_infeasible.py --time-limit 60 --solver-option algorithm=simplex   # and dual-simplex, pdhg
 ```
 
+### 3b. Parametric LP - the optimal value as a function of one coefficient
+
+`tools/parametric.py` walks one cost or one right-hand side across a range: from the optimal
+basis at the start it reads the ranging interval (#220) to find where that basis stops being
+optimal, jumps there, warm-starts (#218) from the basis it is leaving, and records the
+objective and the basis change at every breakpoint. Each reported point is a fresh optimum
+re-solved and checked by `tools/test_parametric.py` through the verifier's own MPS reader,
+not a value extrapolated from ranging. It re-solves at each breakpoint rather than pivoting
+once as a dedicated parametric simplex would; the tool's docstring says what that costs.
+
+**`crude-blend-AL`** - `bench/results/parametric-crude-blend-AL-887b173.csv`, solver at `887b173`, Windows-AMD64, 3 breakpoint(s):
+
+| parameter | objective | status | what changed at this point |
+|---:|---:|---|---|
+| 0.0 | 148.88888888888894 | optimal | initial basis |
+| 1.0666666666666669 | 159.5555555555556 | optimal | no basis change (objective still moves linearly) |
+| 5.0 | 348.017837837838 | optimal | entered: AL, MU; left: BN |
+
+**`crude-blend-THRUPUT`** - `bench/results/parametric-crude-blend-THRUPUT-887b173.csv`, solver at `887b173`, Windows-AMD64, 3 breakpoint(s):
+
+| parameter | objective | status | what changed at this point |
+|---:|---:|---|---|
+| 100.0 | 173.12499999999983 | optimal | initial basis |
+| 107.81351351351357 | 214.14594594594607 | optimal | no basis change (objective still moves linearly) |
+| 200.0 | 214.14594594594604 | optimal | no basis change (objective still moves linearly) |
+
+
 ---
 
 ## 4. Comparison against an established solver
