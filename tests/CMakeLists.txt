@@ -35,6 +35,7 @@ add_executable(sankhya_tests
   unit/test_sparse_lu_singletons.cpp
   unit/test_ldl.cpp
   unit/test_ipm.cpp
+  unit/test_ipm_time_limit.cpp
   unit/test_crossover.cpp
   unit/test_engine_selection.cpp
   unit/test_solver_engine.cpp
