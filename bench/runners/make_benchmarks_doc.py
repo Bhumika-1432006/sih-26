@@ -2279,7 +2279,6 @@ def gpu_real_section(path: Path | None) -> str:
     if "-dirty" in commit:
         return (f"`{path.name}` is stamped `{commit}`: produced from a modified tree. "
                 "Re-run on a clean checkout of a main commit." + chr(10))
-
     instances = sorted({r["instance"] for r in rows})
 
     def lookup_real(instance: str, alg: str, tol: float) -> dict | None:
@@ -2325,7 +2324,81 @@ def gpu_real_section(path: Path | None) -> str:
             f"| `{inst}` | {nrows} | {fmt_s(cpu4)} | {fmt_s(gpu4)} | {fmt_speedup(cpu4, gpu4)} "
             f"| {fmt_s(cpu8)} | {fmt_s(gpu8)} | {fmt_speedup(cpu8, gpu8)} |"
         )
+    lines.append("")
+    return chr(10).join(lines)
 
+
+def gpu_pdlp_section(path: Path | None) -> str:
+    """GPU PDHG vs OR-Tools PDLP head-to-head (#447)."""
+    if path is None:
+        return chr(10).join([
+            "Not yet run. Reproduce with (needs GPU card and `pip install ortools`):",
+            "",
+            "```",
+            "python bench/runners/fetch_mittelmann.py",
+            "python bench/runners/gpu_pdlp_compare.py --binary build_gpu/sankhya",
+            "```",
+            "",
+            "See `docs/PROVENANCE.md` row 21 for the OR-Tools provenance judgement call.",
+            "",
+        ])
+    rows = read_csv(path)
+    if not rows:
+        return "No GPU vs PDLP results yet." + chr(10)
+    commit = rows[0].get("git_commit", "unknown")
+    machine = rows[0].get("machine", "unknown")
+    gpu = rows[0].get("gpu", "") or "not recorded"
+    if "-dirty" in commit:
+        return (f"`{path.name}` is stamped `{commit}`: produced from a modified tree. "
+                "Re-run on a clean checkout of a main commit." + chr(10))
+    instances = sorted({r["instance"] for r in rows})
+
+    def lookup_pdlp(instance: str, solver: str, tol: float) -> dict | None:
+        for r in rows:
+            try:
+                same_tol = abs(float(r.get("tolerance", "nan")) - tol) <= 1e-3 * tol
+            except ValueError:
+                same_tol = False
+            if r.get("instance") == instance and r.get("solver") == solver and same_tol:
+                return r
+        return None
+
+    def fmt_s(r: dict | None) -> str:
+        return f"{float(r['seconds']):.3f}" if r else "—"
+
+    def fmt_ratio(ours: dict | None, theirs: dict | None) -> str:
+        if not ours or not theirs:
+            return "—"
+        try:
+            s = float(theirs["seconds"]) / float(ours["seconds"])
+            return f"{s:.2f}×"
+        except (ZeroDivisionError, ValueError):
+            return "—"
+
+    lines = [
+        f"Source CSV: `bench/results/{path.name}`  ",
+        f"Commit `{commit}` · machine `{machine}`  ",
+        f"GPU: {gpu}",
+        "",
+        "OR-Tools PDLP runs as a separate process via the published `ortools` PyPI wheel "
+        "(same pattern as the HiGHS comparison). "
+        "See `docs/PROVENANCE.md` row 21.",
+        "",
+        "| instance | rows | sankhya-gpu 1e-4 (s) | ortools-pdlp 1e-4 (s) | ratio | "
+        "sankhya-gpu 1e-8 (s) | ortools-pdlp 1e-8 (s) | ratio |",
+        "|----------|-----:|---------------------:|----------------------:|------:|"
+        "--------------------:|----------------------:|------:|",
+    ]
+    for inst in instances:
+        our4 = lookup_pdlp(inst, "sankhya-gpu", 1e-4)
+        pdlp4 = lookup_pdlp(inst, "ortools-pdlp", 1e-4)
+        our8 = lookup_pdlp(inst, "sankhya-gpu", 1e-8)
+        pdlp8 = lookup_pdlp(inst, "ortools-pdlp", 1e-8)
+        nrows = our4.get("rows", "") if our4 else ""
+        lines.append(
+            f"| `{inst}` | {nrows} | {fmt_s(our4)} | {fmt_s(pdlp4)} | {fmt_ratio(our4, pdlp4)} "
+            f"| {fmt_s(our8)} | {fmt_s(pdlp8)} | {fmt_ratio(our8, pdlp8)} |"
+        )
     lines.append("")
     return chr(10).join(lines)
 
@@ -2374,6 +2447,7 @@ def main() -> int:
     # Only a run over the whole set is named maros-meszaros-<sha>.csv; a subset run is
     # maros-meszaros-partial-<sha>.csv and the prefix filter keeps it out (#491).
     maros_meszaros_csv = newest("maros-meszaros-*.csv", prefix="maros-meszaros")
+    gpu_pdlp_csv = newest("gpu-pdlp-*.csv")
 
     # Legacy untagged CSVs predate the tier tag; fall back so an old results directory still
     # generates something rather than failing.
@@ -2487,6 +2561,9 @@ below is where the GPU overtakes the CPU.
 #### 1g.1 GPU on non-synthetic instances
 
 {gpu_real_section(gpu_real_csv)}
+#### 1g.2 GPU PDHG vs OR-Tools PDLP
+
+{gpu_pdlp_section(gpu_pdlp_csv)}
 ---
 
 ### 1f. Scale — how far up this goes
