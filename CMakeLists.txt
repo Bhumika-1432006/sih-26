@@ -274,6 +274,7 @@ set(SANKHYA_CORE_SOURCES
   src/nlp/expression.cpp
   src/nlp/nonlinear_model.cpp
   src/presolve/presolve.cpp
+  src/presolve/domain_propagation.cpp
   src/ipm/ipm.cpp
   src/pdhg/pdhg.cpp
   src/pdhg/pdhg_evaluate.cpp

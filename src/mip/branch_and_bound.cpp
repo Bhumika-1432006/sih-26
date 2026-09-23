@@ -35,6 +35,8 @@
 #include "solution_pool.hpp"
 #include "symmetry.hpp"
 
+#include "presolve/domain_propagation.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -252,6 +254,20 @@ Solution BranchAndBound::run() {
   if (options_.get_bool("mip_objective_branching") && objective_step_ > 0.0 && !quadratic_ &&
       shared_ == nullptr && seed_ == nullptr) {
     append_objective_row();
+  }
+  // Whole-matrix activity propagation at the root (#510; whole_matrix_propagation, OFF by
+  // default), once, before global_lower_/global_upper_ are captured and before any node is
+  // opened: see src/presolve/domain_propagation.hpp for why this is its own routine rather
+  // than a fold into presolve's row elimination or into propagate()'s per-node sweep below.
+  // Isolated to this search's own working_ copy, so a crossed box it proves is left for the
+  // root node's own propagate() (below) to catch exactly as any other node-0 infeasibility
+  // is caught - pruned, no other node open, "no incumbent" reports kInfeasible - rather than
+  // this call needing an early-return path of its own.
+  if (options_.get_bool("whole_matrix_propagation")) {
+    presolve::PropagationResult propagated = presolve::propagate_bounds_to_fixpoint(
+        working_, presolve::Bounds{working_.col_lower, working_.col_upper});
+    working_.col_lower = std::move(propagated.bounds.lower);
+    working_.col_upper = std::move(propagated.bounds.upper);
   }
   global_lower_ = working_.col_lower;
   global_upper_ = working_.col_upper;

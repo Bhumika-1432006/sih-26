@@ -309,6 +309,22 @@ const std::vector<OptionSpec>& Options::registry() {
                  0.0,
                  0.0,
                  {}});
+    s.push_back({"whole_matrix_propagation",
+                 OptionType::Bool,
+                 false,
+                 "Whole-matrix activity-based domain propagation at the root, once, before the "
+                 "tree search starts (#510; Sofranac, Gleixner and Pokutta, 'Accelerated "
+                 "domain propagation for mixed-integer linear programs on GPUs', "
+                 "arXiv:2009.07785, 2020): every row's min/max activity implies a candidate "
+                 "bound for each of its columns, the tightest candidate over every row wins, "
+                 "and passes over the whole matrix repeat until nothing moves. This is the CPU "
+                 "reference the paper's GPU kernel (not implemented here; no CUDA hardware in "
+                 "this environment) must match, and is distinct from ordinary presolve, which "
+                 "only tightens a bound as a side effect of eliminating the row. OFF until the "
+                 "Netlib and MIPLIB re-runs on main say what it changes.",
+                 0.0,
+                 0.0,
+                 {}});
     s.push_back({"tree_cut_depth",
                  OptionType::Int,
                  std::int64_t{0},

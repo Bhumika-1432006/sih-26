@@ -248,4 +248,17 @@ inline constexpr double kCutMaxParallelism = 0.9;
 /// Cuts a round may keep waiting for a later round after selection; the best by score stay.
 inline constexpr int kCutWaitingLimit = 500;
 
+// ---------------------------------------------------------------------------------------
+// Domain propagation
+// ---------------------------------------------------------------------------------------
+
+/// Whole-matrix activity-based domain propagation (#510; Sofranac, Gleixner & Pokutta,
+/// "Accelerated domain propagation for mixed-integer linear programs on GPUs",
+/// arXiv:2009.07785, 2020): the most whole-matrix passes propagate_bounds_to_fixpoint() runs
+/// before giving up on reaching a fixpoint. A pass that tightens no column beyond
+/// kPrimalFeasibility ends the loop early regardless of this cap; it exists only to bound the
+/// pathological case, since this runs once at the root rather than per node the way
+/// branch_and_bound_node.cpp's own propagator (capped at three sweeps there) does.
+inline constexpr int kDomainPropagationMaxRounds = 100;
+
 }  // namespace sankhya::tol
