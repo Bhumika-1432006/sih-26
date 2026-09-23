@@ -26,6 +26,7 @@
 // never a claim it cannot prove. Both are stated in the option's description.
 
 #include "sankhya/ipm.hpp"
+#include "util/memory.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -1025,11 +1026,20 @@ Solution InteriorPoint::run() {
   }
   max_factor_nonzeros_ = options_.get_int(warm_ != nullptr ? "polish_max_factor_nonzeros"
                                                            : "ipm_max_factor_nonzeros");
+  // 0 means "sized from this machine" (#576): the constants these options shipped with
+  // were the 7.7 GB laptop's, and on a 96 GB node they abandoned orderings with 86 GB
+  // free. The polish keeps its own explicit cap.
+  if (warm_ == nullptr && max_factor_nonzeros_ == 0) {
+    max_factor_nonzeros_ =
+        static_cast<std::int64_t>(auto_factor_budget(physical_memory_bytes()));
+  }
   // The ordering's own budget (#246): the one phase that can run the machine out of memory
   // before it can say how large the factor would be.
   const std::int64_t ordering_entries = options_.get_int("ipm_max_ordering_entries");
   ldl_.set_ordering_budget(ordering_entries < 0 ? static_cast<std::size_t>(-1)
-                                                : static_cast<std::size_t>(ordering_entries));
+                           : ordering_entries == 0
+                               ? auto_ordering_budget(physical_memory_bytes())
+                               : static_cast<std::size_t>(ordering_entries));
   run_clock_ = &timer;
   ordering_declined_ = false;
   ordering_deadline_ = std::numeric_limits<double>::infinity();
@@ -1256,11 +1266,30 @@ Solution InteriorPoint::run() {
           residuals();
           const double best_gap =
               mu_ * static_cast<double>(bound_count_) / (1.0 + std::fabs(objective_));
+          // THE STATUS FOLLOWS THE MEASUREMENT OF THE RESTORED POINT (#576). The test that
+          // brought the loop here allows kBarrierExhaustedSlack on every tolerance, so the
+          // iterate handed back can sit a decade above the feasibility tolerance while its
+          // gap is at rounding. Claiming optimal on the gap alone sent irish-electricity to
+          // the status guard as "converged at a relative gap of 8.6e-15" and came back
+          // numerical_error, because the guard measured what the claim did not. Optimal
+          // only when every tolerance holds on the restored point; otherwise the point is
+          // reported as what it is, feasible to the slack, with the numbers in the message.
+          const bool optimal_here = primal_infeasibility_ <= kIpmTolerance &&
+                                    dual_infeasibility_ <= kIpmTolerance &&
+                                    best_gap <= kIpmGap && max_product_ <= kIpmComplementarity;
           return finish(
-              SolveStatus::kOptimal,
-              fmt::format("converged at a relative gap of {:.1e} when the barrier "
-                          "vanished: {} of {} pivots regularized in one factorization",
-                          best_gap, regularized_now, m_),
+              optimal_here ? SolveStatus::kOptimal : SolveStatus::kFeasible,
+              optimal_here
+                  ? fmt::format("converged at a relative gap of {:.1e} when the barrier "
+                                "vanished: {} of {} pivots regularized in one factorization",
+                                best_gap, regularized_now, m_)
+                  : fmt::format("the barrier vanished ({} of {} pivots regularized in one "
+                                "factorization) with the best iterate at relative gap {:.1e} "
+                                "but infeasibility {:.1e} / {:.1e} and worst product {:.1e}, "
+                                "above the {:.0e} tolerance: a feasible point to that slack, "
+                                "not a proof (#576)",
+                                regularized_now, m_, best_gap, primal_infeasibility_,
+                                dual_infeasibility_, max_product_, kIpmTolerance),
               iterations, timer.elapsed_seconds());
         }
       }
