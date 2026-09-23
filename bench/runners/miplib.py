@@ -37,6 +37,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+import stamp  # noqa: E402  (#433: stamps from the binary)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "data" / "miplib"
@@ -131,25 +132,11 @@ def find_binary(explicit: Path | None) -> Path | None:
         return None
 
 
-def git_commit() -> str:
-    """Short commit hash, with "-dirty" appended when tracked files other than the tier
-    manifests are modified. The manifests (data/netlib/reference.json and
-    data/mittelmann/reference.json) are rewritten by the fetch scripts as part of the
-    runner's own workflow and say nothing about what was measured; untracked files are
-    ignored for the same reason (fetched instances are untracked by design)."""
-    try:
-        result = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO_ROOT,
-                                capture_output=True, text=True, check=False)
-        commit = result.stdout.strip() or "unknown"
-        status = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=no", "--",
-             ".", ":!data/netlib/reference.json", ":!data/mittelmann/reference.json"],
-            cwd=REPO_ROOT, capture_output=True, text=True, check=False)
-        if status.stdout.strip():
-            commit += "-dirty"
-        return commit
-    except OSError:
-        return "unknown"
+def git_commit(binary=None) -> str:
+    """The commit this CSV is stamped with: the binary's own, read from `sankhya
+    version`, with `-dirty` from the tree; HEAD only when no binary answers (#433,
+    bench/runners/stamp.py)."""
+    return stamp.stamp(binary)
 
 def solve(binary: Path, instance: Path, time_limit: float, verify: bool,
           solver_options: list[str] | None = None) -> dict:
@@ -241,7 +228,7 @@ def main() -> int:
     reference = manifest["instances"]
 
     names = args.instances or sorted(reference)
-    commit = git_commit()
+    commit = git_commit(args.binary)
     machine = f"{platform.system()}-{platform.machine()}"
     stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 

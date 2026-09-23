@@ -39,6 +39,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+import stamp  # noqa: E402  (#433: stamps from the binary)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RESULTS_DIR = REPO_ROOT / "bench" / "results"
@@ -73,11 +74,11 @@ MATCH_RELATIVE_TOLERANCE = 1e-6
 STATUSES_WITH_A_POINT = ("optimal", "feasible", "iteration_limit", "time_limit")
 
 
-def git_commit() -> str:
-    result = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO_ROOT,
-                            capture_output=True, text=True, check=False)
-    return result.stdout.strip() or "unknown"
-
+def git_commit(binary=None) -> str:
+    """The commit this CSV is stamped with: the binary's own, read from `sankhya
+    version`, with `-dirty` from the tree; HEAD only when no binary answers (#433,
+    bench/runners/stamp.py)."""
+    return stamp.stamp(binary)
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -255,7 +256,7 @@ def main() -> int:
 
     binary = args.binary or default_binary()
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    commit = git_commit()
+    commit = git_commit(args.binary)
     machine = f"{platform.system()}-{platform.machine()}"
     timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     options = " ".join(args.solver_option)

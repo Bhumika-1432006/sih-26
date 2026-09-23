@@ -37,6 +37,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+import stamp  # noqa: E402  (#433: stamps from the binary)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "data" / "netlib"
@@ -97,14 +98,11 @@ def as_number(value) -> float | None:
         return None
 
 
-def git_commit() -> str:
-    try:
-        r = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO_ROOT,
-                           capture_output=True, text=True, check=False)
-        return r.stdout.strip() or "unknown"
-    except OSError:
-        return "unknown"
-
+def git_commit(binary=None) -> str:
+    """The commit this CSV is stamped with: the binary's own, read from `sankhya
+    version`, with `-dirty` from the tree; HEAD only when no binary answers (#433,
+    bench/runners/stamp.py)."""
+    return stamp.stamp(binary)
 
 def find_highs(explicit: Path | None) -> Path | None:
     """A HiGHS command-line binary, if the machine has one."""
