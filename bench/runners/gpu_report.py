@@ -20,6 +20,7 @@ import json
 import platform
 import random
 import re
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -32,7 +33,8 @@ RESULTS_DIR = REPO_ROOT / "bench" / "results"
 CSV_COLUMNS = [
     "instance", "rows", "cols", "nnz", "algorithm", "tolerance",
     "status", "objective", "published_objective", "relative_error",
-    "iterations", "seconds", "wall_seconds", "reached_tolerance",
+    "iterations", "seconds", "seconds_min", "seconds_max", "repeats",
+    "wall_seconds", "reached_tolerance",
     "primal_residual", "dual_residual",
     "git_commit", "machine", "gpu", "timestamp_utc",
 ]
@@ -195,6 +197,8 @@ def main() -> int:
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--time-limit", type=float, default=120.0)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--repeats", type=int, default=5,
+                        help="solves per (size, algorithm, tolerance) cell; median is reported")
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
 
@@ -208,12 +212,12 @@ def main() -> int:
 
     print("GPU vs CPU PDHG crossover benchmark")
     print(f"binary: {args.binary}")
-    print(f"commit: {commit}  machine: {machine}  gpu: {gpu}\n")
-    print(f"{'size':>12}  {'alg':>12}  {'tol':>6}  {'status':>12}  {'seconds':>9}  {'iters':>8}  "
-          f"{'speedup':>8}")
-    print("-" * 80)
+    print(f"commit: {commit}  machine: {machine}  gpu: {gpu}  repeats: {args.repeats}\n")
+    print(f"{'size':>12}  {'alg':>12}  {'tol':>6}  {'status':>12}  {'median':>9}  "
+          f"{'min':>9}  {'max':>9}  {'iters':>8}  {'speedup':>8}")
+    print("-" * 100)
 
-    cpu_times: dict[tuple, float] = {}
+    cpu_medians: dict[tuple, float] = {}
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         for (nrows, ncols, nnz) in SIZES:
@@ -226,14 +230,27 @@ def main() -> int:
             run_solve(args.binary, mps_path, "pdhg-cuda", TOLERANCES[0], args.time_limit)
             for tol in TOLERANCES:
                 for alg in algorithms:
-                    result = run_solve(args.binary, mps_path, alg, tol, args.time_limit)
+                    # Run the cell args.repeats times; report median/min/max so run-to-run
+                    # variance on a laptop GPU (clock boost, thermal state) is visible.
+                    sample_results = [
+                        run_solve(args.binary, mps_path, alg, tol, args.time_limit)
+                        for _ in range(args.repeats)
+                    ]
+                    # Pick the result whose solve time is closest to the median for metadata.
+                    sample_seconds = [r["seconds"] for r in sample_results]
+                    med = statistics.median(sample_seconds)
+                    result = min(sample_results,
+                                 key=lambda r: abs(r["seconds"] - med))
+                    sec_min = min(sample_seconds)
+                    sec_max = max(sample_seconds)
+
                     obj = result["objective"]
                     err = (abs(obj - optimum) / max(1.0, abs(optimum))) if obj is not None else None
                     key = (nrows, tol, "pdhg-cpu")
                     if alg == "pdhg-cpu":
-                        cpu_times[key] = result["seconds"]
-                    cpu_t = cpu_times.get((nrows, tol, "pdhg-cpu"))
-                    speedup = (cpu_t / result["seconds"]) if (alg != "pdhg-cpu" and cpu_t) else 1.0
+                        cpu_medians[key] = med
+                    cpu_t = cpu_medians.get((nrows, tol, "pdhg-cpu"))
+                    speedup = (cpu_t / med) if (alg != "pdhg-cpu" and cpu_t) else 1.0
 
                     rows.append({
                         "instance": f"kkt_{nrows}x{ncols}",
@@ -245,7 +262,10 @@ def main() -> int:
                         "published_objective": repr(optimum),
                         "relative_error": "" if err is None else repr(err),
                         "iterations": result["iterations"],
-                        "seconds": round(result["seconds"], 6),
+                        "seconds": round(med, 6),
+                        "seconds_min": round(sec_min, 6),
+                        "seconds_max": round(sec_max, 6),
+                        "repeats": args.repeats,
                         "wall_seconds": round(result["wall"], 6),
                         "reached_tolerance": int(result["status"] in ("optimal", "feasible")),
                         "primal_residual": result.get("primal_residual", ""),
@@ -256,7 +276,8 @@ def main() -> int:
 
                     speedup_str = f"{speedup:.2f}x" if alg != "pdhg-cpu" else "baseline"
                     print(f"{nrows:>5}x{ncols:<6}  {alg:>12}  {tol:>6.0e}  "
-                          f"{result['status']:>12}  {result['seconds']:>9.3f}  "
+                          f"{result['status']:>12}  {med:>9.3f}  "
+                          f"{sec_min:>9.3f}  {sec_max:>9.3f}  "
                           f"{str(result['iterations']):>8}  {speedup_str:>8}")
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)

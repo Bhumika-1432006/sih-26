@@ -1937,6 +1937,42 @@ def gpu_section(path: Path | None) -> str:
         "timed ones. The GPU pays a per-iteration launch and transfer cost that a small model "
         "cannot amortise; the crossover is where the parallel products start to pay for it.",
         "",
+    ]
+
+    # Detect whether the CSV carries per-cell spread (seconds_min / seconds_max / repeats).
+    has_spread = any(r.get("seconds_min") or r.get("seconds_max") for r in rows)
+    repeats = rows[0].get("repeats", "") if rows else ""
+
+    def fmt_s(r: dict | None) -> str:
+        if not r:
+            return "—"
+        med = r.get("seconds", "")
+        if not has_spread or not r.get("seconds_min"):
+            return f"{float(med):.3f}" if med != "" else "—"
+        lo = r.get("seconds_min", "")
+        hi = r.get("seconds_max", "")
+        try:
+            return f"{float(med):.3f} [{float(lo):.3f}–{float(hi):.3f}]"
+        except (TypeError, ValueError):
+            return f"{float(med):.3f}" if med != "" else "—"
+
+    def fmt_speedup(cpu: dict | None, gpu: dict | None) -> str:
+        if not cpu or not gpu:
+            return "—"
+        try:
+            s = float(cpu["seconds"]) / float(gpu["seconds"])
+            return f"**{s:.2f}×**" if s > 1 else f"{s:.2f}×"
+        except (ZeroDivisionError, ValueError):
+            return "—"
+
+    if has_spread and repeats:
+        lines.append(
+            f"Each cell is the median of {repeats} solves; `[min–max]` shows the spread "
+            "from run-to-run variance (thermal state, clock boost on the laptop GPU)."
+        )
+        lines.append("")
+
+    lines += [
         "| rows×cols | CPU 1e-4 (s) | GPU 1e-4 (s) | speedup | CPU 1e-8 (s) | GPU 1e-8 (s) | speedup |",
         "|----------:|-------------:|-------------:|--------:|-------------:|-------------:|--------:|",
     ]
@@ -1945,18 +1981,6 @@ def gpu_section(path: Path | None) -> str:
         gpu4 = lookup(nrows, ncols, "pdhg-cuda", 1e-4)
         cpu8 = lookup(nrows, ncols, "pdhg-cpu", 1e-8)
         gpu8 = lookup(nrows, ncols, "pdhg-cuda", 1e-8)
-
-        def fmt_s(r: dict | None) -> str:
-            return f"{float(r['seconds']):.3f}" if r else "—"
-
-        def fmt_speedup(cpu: dict | None, gpu: dict | None) -> str:
-            if not cpu or not gpu:
-                return "—"
-            try:
-                s = float(cpu["seconds"]) / float(gpu["seconds"])
-                return f"**{s:.2f}×**" if s > 1 else f"{s:.2f}×"
-            except (ZeroDivisionError, ValueError):
-                return "—"
 
         lines.append(
             f"| {nrows}×{ncols} | {fmt_s(cpu4)} | {fmt_s(gpu4)} | {fmt_speedup(cpu4, gpu4)} "
