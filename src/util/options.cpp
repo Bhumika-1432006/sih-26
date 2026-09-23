@@ -185,6 +185,39 @@ const std::vector<OptionSpec>& Options::registry() {
                  0.0,
                  0.0,
                  {"dual", "primal"}});
+    s.push_back({"batched_node_bounding",
+                 OptionType::Bool,
+                 false,
+                 "Batch a node's two children into one batched-PDHG safe-bounding call "
+                 "(#520; src/pdhg/pdhg_batch.cpp) when a branch creates them, and prune "
+                 "whichever child the batch reports a safe bound no better than the "
+                 "incumbent for without ever giving it a simplex solve. A child the batch "
+                 "could not bound within pdhg_batch_iterations, or whose branch changed a "
+                 "row bound rather than a column bound (objective branching, #418), is opened "
+                 "normally - this option only ever prunes MORE, never differently: every "
+                 "surviving node is still solved and fathomed exactly as without it. OFF by "
+                 "default: this is the CPU reference for a future batched GPU kernel, not yet "
+                 "measured for whether the batch's own cost beats the simplex solves it saves.",
+                 0.0,
+                 0.0,
+                 {}});
+    s.push_back({"batched_strong_branching",
+                 OptionType::Bool,
+                 false,
+                 "Score strong branching's candidates from one batched-PDHG safe-bounding "
+                 "call over all 2K children of the K unreliable candidates (#520; arXiv "
+                 "2601.21990's batched first-order strong branching), instead of a "
+                 "warm-started dual simplex solve per child. Only read when mip_branching is "
+                 "reliability. A child the batch could not bound within "
+                 "pdhg_batch_iterations scores 0 gain in that direction rather than falling "
+                 "back to a simplex probe, and this path never detects a side infeasible the "
+                 "way the simplex probe does - both are the price of skipping the exact "
+                 "solve, not a correctness gap: the bound used is never unsafe, only "
+                 "sometimes absent. OFF by default, and independent of "
+                 "batched_node_bounding.",
+                 0.0,
+                 0.0,
+                 {}});
     s.push_back({"pricing",
                  OptionType::String,
                  std::string("devex"),
@@ -954,6 +987,17 @@ const std::vector<OptionSpec>& Options::registry() {
                  "Restart PDHG on the KKT-error criterion; off is for evidence runs.",
                  0.0,
                  0.0,
+                 {}});
+    s.push_back({"pdhg_batch_iterations",
+                 OptionType::Int,
+                 std::int64_t{tol::kPdhgBatchIterationLimit},
+                 "Iteration budget for ONE node inside a batched-PDHG safe-bounding call "
+                 "(#520; src/pdhg/pdhg_batch.cpp), read only when batched_node_bounding or "
+                 "batched_strong_branching is on. A node that has not reached a dual-feasible "
+                 "iterate within this budget reports no bound rather than an unsafe one, and "
+                 "the caller falls back to solving it normally.",
+                 1.0,
+                 kNoLimit,
                  {}});
     s.push_back({"qp_tolerance",
                  OptionType::Double,

@@ -49,6 +49,7 @@
 #include "sankhya/timer.hpp"
 #include "sankhya/tolerances.hpp"
 
+#include "pdhg/pdhg_batch.hpp"
 #include "simplex/primal_simplex.hpp"
 
 #include "branch_and_bound_internal.hpp"
@@ -680,6 +681,42 @@ Solution BranchAndBound::run() {
         ++objective_branches_;
       }
     }
+
+    // BATCHED NODE BOUNDING (#520, off by default; src/pdhg/pdhg_batch.cpp). Both children
+    // share working_'s matrix and row bounds with each other and with the node they were
+    // just branched from - the definition of a batch. One batched-PDHG call scores both at
+    // once; a child the call reports a safe bound no better than the incumbent for is
+    // pruned before it is ever opened, without a simplex solve. A child the batch could not
+    // bound within pdhg_batch_iterations, or whose branch moved a ROW bound rather than a
+    // column one (objective branching, #418, which the batch does not cover: it shares row
+    // bounds across the whole batch), is opened exactly as it would be without this option.
+    bool down_pruned = false;
+    bool up_pruned = false;
+    if (options_.get_bool("batched_node_bounding") &&
+        down_change.column < original_.num_cols() && up_change.column < original_.num_cols()) {
+      pdhg::BatchNodeBounds down_bounds;
+      down_bounds.col_lower = working_.col_lower;
+      down_bounds.col_upper = working_.col_upper;
+      pdhg::BatchNodeBounds up_bounds = down_bounds;
+      const auto down_col = static_cast<std::size_t>(down_change.column);
+      if (down_change.is_upper) {
+        down_bounds.col_upper[down_col] = down_change.value;
+      } else {
+        down_bounds.col_lower[down_col] = down_change.value;
+      }
+      const auto up_col = static_cast<std::size_t>(up_change.column);
+      if (up_change.is_upper) {
+        up_bounds.col_upper[up_col] = up_change.value;
+      } else {
+        up_bounds.col_lower[up_col] = up_change.value;
+      }
+      const std::vector<pdhg::BatchNodeBounds> batch{std::move(down_bounds),
+                                                     std::move(up_bounds)};
+      const std::vector<pdhg::BatchNodeBound> batch_bounds =
+          pdhg::solve_batch(working_, batch, options_, logger_);
+      if (batch_bounds[0].safe && can_prune(batch_bounds[0].bound)) down_pruned = true;
+      if (batch_bounds[1].safe && can_prune(batch_bounds[1].bound)) up_pruned = true;
+    }
     leave();
 
     // Both children inherit the parent's estimate: it is a property of the relaxation they
@@ -711,8 +748,18 @@ Solution BranchAndBound::run() {
     const auto down_index = static_cast<Index>(nodes_.size() - 1);
     nodes_.push_back(up);
     const auto up_index = static_cast<Index>(nodes_.size() - 1);
-    open_.push_back(down_index);
-    open_.push_back(up_index);
+    // A child pruned by the batch above (#520) is left closed: it exists in nodes_, the way
+    // every fathomed node does, and is simply never added to open_.
+    if (down_pruned) {
+      ++nodes_pruned_;
+    } else {
+      open_.push_back(down_index);
+    }
+    if (up_pruned) {
+      ++nodes_pruned_;
+    } else {
+      open_.push_back(up_index);
+    }
     dive = true;
 
     // ---- The node table -------------------------------------------------------------------

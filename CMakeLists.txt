@@ -277,6 +277,7 @@ set(SANKHYA_CORE_SOURCES
   src/ipm/ipm.cpp
   src/pdhg/pdhg.cpp
   src/pdhg/pdhg_evaluate.cpp
+  src/pdhg/pdhg_batch.cpp
   src/gpu/gpu_memory.cpp
   src/gpu/multi_device.cpp
   src/simplex/dual_simplex.cpp

@@ -262,6 +262,46 @@ TEST(BranchAndBound, ZeroOneKnapsack) {
   EXPECT_DOUBLE_EQ(s.integrality_violation, 0.0);
 }
 
+TEST(BranchAndBound, BatchedNodeBoundingMatchesTheOrdinarySearch) {
+  // Capacity 10 (rather than ZeroOneKnapsack's 9) gives a fractional root relaxation, so the
+  // search actually branches and exercises the batched safe-bounding call this option adds
+  // at every branch (#520; src/pdhg/pdhg_batch.cpp). The bound's own safety is what
+  // tests/unit/test_pdhg_batch.cpp checks against the rational oracle; this test only checks
+  // the weaker, but still necessary, property that turning the option on changes no answer -
+  // it may only prune nodes an ordinary search would also have fathomed.
+  const Model model =
+      make_milp({{5.0, 4.0, 3.0, 2.0}}, {-kInfinity}, {10.0}, {-10.0, -7.0, -4.0, -3.0},
+                {1.0, 1.0, 1.0, 1.0}, {true, true, true, true});
+  const Solution baseline = solve(model, mip_options());
+  ASSERT_EQ(baseline.status, SolveStatus::kOptimal);
+
+  Options options = mip_options();
+  options.set_bool("batched_node_bounding", true);
+  const Solution batched = solve(model, options);
+  EXPECT_EQ(batched.status, SolveStatus::kOptimal);
+  EXPECT_NEAR(batched.objective, baseline.objective, 1e-6);
+  EXPECT_DOUBLE_EQ(batched.integrality_violation, 0.0);
+}
+
+TEST(BranchAndBound, BatchedStrongBranchingMatchesTheOrdinarySearch) {
+  // Same reasoning as BatchedNodeBoundingMatchesTheOrdinarySearch, for the other #520 site:
+  // scoring reliability branching's candidates from one batched call
+  // (select_branching_column() in branch_and_bound_node.cpp) instead of a warm-started dual
+  // simplex probe per child must change which column is picked, at most, never the answer.
+  const Model model =
+      make_milp({{5.0, 4.0, 3.0, 2.0}}, {-kInfinity}, {10.0}, {-10.0, -7.0, -4.0, -3.0},
+                {1.0, 1.0, 1.0, 1.0}, {true, true, true, true});
+  const Solution baseline = solve(model, mip_options());
+  ASSERT_EQ(baseline.status, SolveStatus::kOptimal);
+
+  Options options = mip_options();
+  options.set_bool("batched_strong_branching", true);
+  const Solution batched = solve(model, options);
+  EXPECT_EQ(batched.status, SolveStatus::kOptimal);
+  EXPECT_NEAR(batched.objective, baseline.objective, 1e-6);
+  EXPECT_DOUBLE_EQ(batched.integrality_violation, 0.0);
+}
+
 TEST(BranchAndBound, RespectsSolveControlInterruptionWithCallback) {
   // Use a fractional root relaxation (capacity 10 instead of 9) so the solver
   // genuinely has to branch, ensuring it cannot trivially finish before the next poll.

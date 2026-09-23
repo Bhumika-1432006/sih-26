@@ -20,6 +20,7 @@
 #include "sankhya/timer.hpp"
 #include "sankhya/tolerances.hpp"
 
+#include "pdhg/pdhg_batch.hpp"
 #include "simplex/primal_simplex.hpp"
 
 #include "parallel_search.hpp"
@@ -359,54 +360,110 @@ Index BranchAndBound::select_branching_column(const std::vector<double>& x, doub
   std::vector<double> measured_down(candidates.size(), -1.0);
   std::vector<double> measured_up(candidates.size(), -1.0);
   std::vector<bool> infeasible_side(candidates.size(), false);
-  for (const std::size_t i : to_probe) {
-    const Candidate& candidate = candidates[i];
-    const auto u = static_cast<std::size_t>(candidate.column);
-    const double v = x[u];
-    for (int direction = 0; direction < 2; ++direction) {
-      const bool downward = direction == 0;
-      const std::size_t saved_before = saved_.size();
-      if (downward) {
-        tighten_upper(u, std::floor(v));
-      } else {
-        tighten_lower(u, std::floor(v) + 1.0);
-      }
-      current_warm_ = node_basis;
-      const Solution probe = solve_node_with(probe_options_);
-      ++strong_branch_solves_;
-      strong_branch_iterations_ += probe.iterations;
-      // Undo only this probe's bound change; propagate()'s and the dive's stay.
-      for (std::size_t k = saved_.size(); k-- > saved_before;) {
-        const auto c = static_cast<std::size_t>(saved_[k].column);
-        if (saved_[k].is_upper) {
-          working_.col_upper[c] = saved_[k].value;
-        } else {
-          working_.col_lower[c] = saved_[k].value;
+  if (options_.get_bool("batched_strong_branching") && !to_probe.empty()) {
+    // BATCHED STRONG BRANCHING (#520; arXiv 2601.21990, batched first-order strong
+    // branching on GPU). The 2K children of the K unreliable candidates all share
+    // working_'s matrix and row bounds with each other and with this node - the definition
+    // of a batch - so they go to pdhg::solve_batch() (src/pdhg/pdhg_batch.cpp) as ONE call
+    // instead of 2K warm-started dual simplex solves.
+    //
+    // What this path gives up relative to the simplex probe below: it never sets
+    // infeasible_side, because an early-stopped first-order method proves nothing about
+    // infeasibility, only a bound. A child the batch could not bound within
+    // pdhg_batch_iterations leaves that entry unmeasured (-1), which is exactly the state
+    // an untried direction is already in below, so it falls back to the pseudocost average
+    // the same way. Nothing here can turn an unsafe bound into a score: solve_batch()
+    // reports `safe` only for a bound it has verified dual-feasible.
+    std::vector<pdhg::BatchNodeBounds> batch;
+    batch.reserve(to_probe.size() * 2);
+    for (const std::size_t i : to_probe) {
+      const Candidate& candidate = candidates[i];
+      const auto u = static_cast<std::size_t>(candidate.column);
+      const double v = x[u];
+      pdhg::BatchNodeBounds down_bounds;
+      down_bounds.col_lower = working_.col_lower;
+      down_bounds.col_upper = working_.col_upper;
+      down_bounds.col_upper[u] = std::floor(v);
+      pdhg::BatchNodeBounds up_bounds;
+      up_bounds.col_lower = working_.col_lower;
+      up_bounds.col_upper = working_.col_upper;
+      up_bounds.col_lower[u] = std::floor(v) + 1.0;
+      batch.push_back(std::move(down_bounds));
+      batch.push_back(std::move(up_bounds));
+    }
+    const std::vector<pdhg::BatchNodeBound> batch_bounds =
+        pdhg::solve_batch(working_, batch, options_, logger_);
+    for (std::size_t pos = 0; pos < to_probe.size(); ++pos) {
+      const std::size_t i = to_probe[pos];
+      const Candidate& candidate = candidates[i];
+      const pdhg::BatchNodeBound& down_result = batch_bounds[2 * pos];
+      const pdhg::BatchNodeBound& up_result = batch_bounds[(2 * pos) + 1];
+      if (down_result.safe) {
+        const double gain = std::max(down_result.bound - node_bound, 0.0);
+        measured_down[i] = gain;
+        if (candidate.fraction > 0.0) {
+          record_pseudocost(candidate.column, /*downward=*/true, gain, candidate.fraction);
         }
       }
-      saved_.resize(saved_before);
-
-      double gain = 0.0;
-      if (probe.status == SolveStatus::kInfeasible) {
-        infeasible_side[i] = true;
-        gain = std::numeric_limits<double>::infinity();
-      } else if (probe.status == SolveStatus::kOptimal) {
-        gain = std::max(internal_objective(probe.col_value) - node_bound, 0.0);
-      } else if (probe.status == SolveStatus::kIterationLimit &&
-                 std::isfinite(probe.dual_bound)) {
-        // The dual's bound at the cap, converted to minimise space without the offset,
-        // which is what node_bound is measured in.
-        gain = std::max(sense_ * (probe.dual_bound - original_.objective_offset) - node_bound,
-                        0.0);
-      }
-      const double fraction = downward ? candidate.fraction : 1.0 - candidate.fraction;
-      if (downward) {
-        measured_down[i] = gain;
-      } else {
+      if (up_result.safe) {
+        const double gain = std::max(up_result.bound - node_bound, 0.0);
         measured_up[i] = gain;
+        const double up_fraction = 1.0 - candidate.fraction;
+        if (up_fraction > 0.0) {
+          record_pseudocost(candidate.column, /*downward=*/false, gain, up_fraction);
+        }
       }
-      if (std::isfinite(gain) && fraction > 0.0) {
-        record_pseudocost(candidate.column, downward, gain, fraction);
+    }
+  } else {
+    for (const std::size_t i : to_probe) {
+      const Candidate& candidate = candidates[i];
+      const auto u = static_cast<std::size_t>(candidate.column);
+      const double v = x[u];
+      for (int direction = 0; direction < 2; ++direction) {
+        const bool downward = direction == 0;
+        const std::size_t saved_before = saved_.size();
+        if (downward) {
+          tighten_upper(u, std::floor(v));
+        } else {
+          tighten_lower(u, std::floor(v) + 1.0);
+        }
+        current_warm_ = node_basis;
+        const Solution probe = solve_node_with(probe_options_);
+        ++strong_branch_solves_;
+        strong_branch_iterations_ += probe.iterations;
+        // Undo only this probe's bound change; propagate()'s and the dive's stay.
+        for (std::size_t k = saved_.size(); k-- > saved_before;) {
+          const auto c = static_cast<std::size_t>(saved_[k].column);
+          if (saved_[k].is_upper) {
+            working_.col_upper[c] = saved_[k].value;
+          } else {
+            working_.col_lower[c] = saved_[k].value;
+          }
+        }
+        saved_.resize(saved_before);
+
+        double gain = 0.0;
+        if (probe.status == SolveStatus::kInfeasible) {
+          infeasible_side[i] = true;
+          gain = std::numeric_limits<double>::infinity();
+        } else if (probe.status == SolveStatus::kOptimal) {
+          gain = std::max(internal_objective(probe.col_value) - node_bound, 0.0);
+        } else if (probe.status == SolveStatus::kIterationLimit &&
+                   std::isfinite(probe.dual_bound)) {
+          // The dual's bound at the cap, converted to minimise space without the offset,
+          // which is what node_bound is measured in.
+          gain = std::max(sense_ * (probe.dual_bound - original_.objective_offset) - node_bound,
+                          0.0);
+        }
+        const double fraction = downward ? candidate.fraction : 1.0 - candidate.fraction;
+        if (downward) {
+          measured_down[i] = gain;
+        } else {
+          measured_up[i] = gain;
+        }
+        if (std::isfinite(gain) && fraction > 0.0) {
+          record_pseudocost(candidate.column, downward, gain, fraction);
+        }
       }
     }
   }

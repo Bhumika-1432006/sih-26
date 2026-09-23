@@ -199,6 +199,16 @@ inline constexpr double kHarrisRelaxation = 0.1 * kPrimalFeasibility;
 inline constexpr double kPdhgLoose = 1e-4;
 inline constexpr double kPdhgTight = 1e-8;
 
+/// Batched node bounding and batched strong branching (#520): the iteration cap ONE node's
+/// restarted PDHG run gets inside a batch before it is reported early-stopped. This is
+/// analogous to kStrongBranchingIterations for the dual-simplex probe - a budget that keeps
+/// one call from dominating the branching decision or the node loop - but PDHG iterations
+/// and simplex pivots are not comparable units, so it is its own constant rather than a
+/// reuse of that one. Small on purpose: the batch's whole value proposition is a cheap
+/// early read, and a node it cannot bound within this budget just falls through to the
+/// ordinary simplex solve, which is what the CPU reference is checked against.
+inline constexpr int kPdhgBatchIterationLimit = 2000;
+
 // ---------------------------------------------------------------------------------------
 // Cuts
 // ---------------------------------------------------------------------------------------
