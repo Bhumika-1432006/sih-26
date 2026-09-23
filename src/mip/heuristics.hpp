@@ -39,7 +39,21 @@
 //                    distance is linear only for a column rounded to one of its bounds; a
 //                    general integer rounded strictly inside its bounds needs an auxiliary
 //                    column (Bertacco, Fischetti and Lodi 2007) and is left out of the
-//                    distance here, which the PR says.
+//                    distance here, which the PR says. PumpEngine::kPdhg (#509) solves the
+//                    same projection LP through the restarted PDHG instead of whatever
+//                    `algorithm` would otherwise pick, in the spirit of Corduk et al.,
+//                    arXiv:2510.20499, which pairs a feasibility pump with a first-order LP
+//                    engine so the projection stays matrix-free-friendly.
+//   fix-and-propagate #509; Mexi, Besançon, Bolusani, Chmiela, Muñoz and Hendel, "Scylla: a
+//                    matrix-free fix-propagate-and-project heuristic for mixed-integer
+//                    optimization", arXiv:2307.03466; Corduk, Anjos and Vannelli, "A
+//                    GPU-accelerated feasibility pump...", arXiv:2510.20499: order the
+//                    integer columns by how fractional a PDHG point leaves them, fix the
+//                    least fractional (most confident) first, propagate row activity bounds
+//                    (Savelsbergh 1994, the same technique branch_and_bound's propagate()
+//                    uses) after every fix, and backtrack a bounded number of times. Scylla's
+//                    own repair step is Feasibility Jump (#506), not built on this branch;
+//                    repair() below stands in until it is.
 
 #pragma once
 
@@ -118,16 +132,73 @@ bool rens_submodel(const Model& model, const std::vector<Index>& integer_columns
                    const std::vector<double>& relaxation, double min_fixed_fraction,
                    double tolerance, Model* out, Count* fixed);
 
+/// Which engine solves the pump's L1-projection sub-problem each round (#509). kSimplex is
+/// the historical behaviour: whatever `lp_options`' own "algorithm" says. kPdhg overrides
+/// "algorithm" to "pdhg" for the projection solve only, so it runs on the restarted PDHG
+/// instead. pdhg::solve_pdhg has no warm start from a previous iterate (checked against
+/// pdhg.hpp/pdhg.cpp on this branch, #509): each round is therefore a fresh PDHG solve, not
+/// a faked warm one, even though the constraint matrix is unchanged round to round.
+enum class PumpEngine { kSimplex, kPdhg };
+
 /// The feasibility pump from an LP point `start`. Returns the first point whose integer
 /// columns are integral and which the pump's own LP says is feasible, or an empty vector.
 /// `lp_solves` reports the LP projections spent. `lp_options` is what each projection is
-/// solved with; the caller sets its limits.
-[[nodiscard]] std::vector<double> feasibility_pump(const Model& model,
-                                                   const std::vector<Index>& integer_columns,
-                                                   const std::vector<double>& start,
-                                                   const Options& lp_options, int max_rounds,
-                                                   double integrality_tolerance,
-                                                   Count* lp_solves);
+/// solved with; the caller sets its limits. `engine` picks what solves the projection LP;
+/// see PumpEngine.
+[[nodiscard]] std::vector<double> feasibility_pump(
+    const Model& model, const std::vector<Index>& integer_columns,
+    const std::vector<double>& start, const Options& lp_options, int max_rounds,
+    double integrality_tolerance, Count* lp_solves, PumpEngine engine = PumpEngine::kSimplex);
+
+/// Row-activity bound propagation (#509; Savelsbergh, "Preprocessing and probing for mixed
+/// integer programming problems", ORSA J. Computing 6(4), 1994 - the same citation and
+/// technique branch_and_bound's node propagate() uses, cf. docs/PROVENANCE.md). Reimplemented
+/// here as a pure function over caller-owned bound vectors: presolve's version of this
+/// (`activity_bounds()` in presolve.cpp) is private to its Workspace and reduces the model
+/// rather than tightening a box in place, and issue #510's whole-matrix propagator is not
+/// present on this branch (checked at the time this was written) - so this is the fallback
+/// the #509 plan calls for.
+///
+/// Tightens `*col_lower`/`*col_upper` from `model`'s rows to a fixed point, a handful of
+/// sweeps at most (Savelsbergh's observation that most tightening happens in the first one
+/// or two). Returns false, leaving the vectors at whatever they had reached, when a row's
+/// reachable activity or a column's own bounds prove the box empty.
+[[nodiscard]] bool propagate_bounds(const Model& model, std::vector<double>* col_lower,
+                                    std::vector<double>* col_upper,
+                                    double integrality_tolerance);
+
+/// What one fix-and-propagate pass produced.
+struct FixAndPropagateResult {
+  std::vector<double> x;  ///< the point handed to (and, if it ran, returned by) repair()
+  std::vector<double> col_lower;  ///< the propagated box fix-and-propagate reached
+  std::vector<double> col_upper;
+  Count fixed = 0;       ///< integer columns left with col_lower == col_upper
+  Count backtracks = 0;  ///< retries spent undoing a fix that propagation proved infeasible
+  bool repair_ran = false;
+  /// True when every row is satisfied to tolerance - by propagation alone, or after repair()
+  /// ran. False means even repair() could not close every row; `x` is still returned, and
+  /// the caller's offer_incumbent() is the actual feasibility gate, as for every heuristic
+  /// here (see the file header comment).
+  bool feasible = false;
+};
+
+/// Fix-and-propagate (#509) from a fractional point `pdhg_point` (meant to be a PDHG
+/// relaxation's point, per the issue, but this function does not itself call PDHG - see the
+/// file header comment). Sorts `integer_columns` by `pdhg_point`'s fractionality, LEAST
+/// fractional first (the standard "most confident" ordering: lock in what the relaxation
+/// already agrees on before touching what it does not), fixes each to its rounded value in
+/// that order, and calls propagate_bounds() after every fix. When a fix's propagation proves
+/// the box empty, backtracks once for that column - unfixes it and tries the other rounding -
+/// up to `max_backtracks` such retries in total; a column that still cannot be fixed after
+/// its retry is left free. Every integer column propagation leaves un-fixed (or free after a
+/// backtrack) is rounded to nearest within its propagated box in the returned point, and the
+/// whole point is then handed to repair() (see the file header comment: this is the #506
+/// Feasibility Jump substitute) to close whatever rows are still violated.
+[[nodiscard]] FixAndPropagateResult fix_and_propagate(const Model& model,
+                                                      const std::vector<Index>& integer_columns,
+                                                      const std::vector<double>& pdhg_point,
+                                                      int max_backtracks,
+                                                      double integrality_tolerance);
 
 /// Which heuristics a search runs, and with what budgets, resolved from the options once
 /// (#414). Each heuristic has its own mip_heur_* switch: `auto` follows mip_heuristics, `on`
@@ -140,6 +211,7 @@ struct HeuristicSchedule {
   bool pump = false;
   bool rins = false;
   bool rens = false;
+  bool fix_and_propagate = false;                        ///< #509
   bool dive[kDiveRules] = {false, false, false, false};  ///< by DiveRule
   bool dive_backtrack = false;
   Count rins_frequency = 0;
@@ -148,7 +220,11 @@ struct HeuristicSchedule {
   Count dive_frequency = 0;  ///< 0: the dives run at the root only
   int dive_lp_resolves = 0;
   int pump_rounds = 0;
-  bool seconds_budgets = true;  ///< false under deterministic=true (#288's rule)
+  /// #509. Whether the pump's projection LP (when pump is on) runs through PDHG rather than
+  /// whatever `algorithm` would otherwise pick.
+  bool pump_pdhg_projection = false;
+  Count fix_and_propagate_backtracks = 0;  ///< #509
+  bool seconds_budgets = true;             ///< false under deterministic=true (#288's rule)
 
   [[nodiscard]] static HeuristicSchedule from(const Options& options);
   /// True when anything beyond rounding and the fractional root dive - the two every

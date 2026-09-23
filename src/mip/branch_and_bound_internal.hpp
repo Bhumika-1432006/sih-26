@@ -330,6 +330,9 @@ class BranchAndBound {
   void unwind_to(std::size_t mark);
   /// The feasibility pump at the root, only when nothing else found an incumbent.
   void run_root_pump(const Solution& relaxation);
+  /// Fix-and-propagate at the root (#509): a fresh PDHG relaxation solve, then
+  /// fix_and_propagate() and repair(), offered as one candidate.
+  void run_fix_and_propagate();
   void report_heuristics();
   // ---- Reduced-cost fixing and restarts (#418), in branch_and_bound_restart.cpp ---------
   /// Keep the root relaxation's reduced costs and basis: the material fixing works from.

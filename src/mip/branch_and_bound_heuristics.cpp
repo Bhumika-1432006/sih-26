@@ -40,6 +40,7 @@ enum Slot : std::size_t {
   kPump,
   kRins,
   kRens,
+  kFixAndPropagate,  ///< #509
   kSlots
 };
 constexpr const char* kNames[kSlots] = {"rounding",
@@ -51,7 +52,8 @@ constexpr const char* kNames[kSlots] = {"rounding",
                                         "guided diving",
                                         "feasibility pump",
                                         "RINS",
-                                        "RENS"};
+                                        "RENS",
+                                        "fix-and-propagate"};
 static_assert(kDiveGuided - kDiveFractional + 1 == kDiveRules);
 
 /// The options a sub-MIP (RINS, RENS) is solved with: the search's own, quiet, capped at
@@ -336,11 +338,49 @@ void BranchAndBound::run_root_pump(const Solution& relaxation) {
                   std::max(0.0, 0.2 * limits_.remaining_seconds(timer_.elapsed_seconds())));
   }
   Count solves = 0;
+  const PumpEngine engine =
+      schedule_.pump_pdhg_projection ? PumpEngine::kPdhg : PumpEngine::kSimplex;
   const std::vector<double> x =
       feasibility_pump(original_, integer_columns_, relaxation.col_value, lp,
-                       schedule_.pump_rounds, integrality_tolerance_, &solves);
+                       schedule_.pump_rounds, integrality_tolerance_, &solves, engine);
   s.work += solves;
   if (!x.empty()) (void)offer_from(kPump, x);
+  s.seconds += clock.elapsed_seconds();
+}
+
+// Fix-and-propagate (#509; see heuristics.hpp's file comment for the citations and the
+// #506/repair() substitution). Root only, like RENS and repair(): its value is an early
+// incumbent, which matters only before the tree has found one.
+void BranchAndBound::run_fix_and_propagate() {
+  if (!schedule_.fix_and_propagate || have_incumbent_ || quadratic_) return;
+  HeuristicStats& s = heuristic_stats_[kFixAndPropagate];
+  const Timer clock;
+  ++s.calls;
+
+  // The point this heuristic sorts by has to come from PDHG, not from whatever `relaxation`
+  // the node happened to solve with (dual simplex by default) - that is the whole point of
+  // it being "driven by the PDHG point" (#509). A fresh continuous relaxation, PDHG forced.
+  Model relaxation_lp = original_;
+  std::fill(relaxation_lp.col_type.begin(), relaxation_lp.col_type.end(), VarType::kContinuous);
+  Options pdhg_options = node_options_;
+  pdhg_options.set_bool("log_to_console", false);
+  pdhg_options.set_string("algorithm", "pdhg");
+  if (schedule_.seconds_budgets && limits_.has_time_limit()) {
+    pdhg_options.set_double(
+        "time_limit", std::max(0.0, 0.2 * limits_.remaining_seconds(timer_.elapsed_seconds())));
+  }
+  const Solution pdhg_point = solve(relaxation_lp, pdhg_options, control_);
+  ++s.work;
+  if (!claims_a_point(pdhg_point)) {
+    s.seconds += clock.elapsed_seconds();
+    return;
+  }
+
+  const FixAndPropagateResult result = fix_and_propagate(
+      original_, integer_columns_, pdhg_point.col_value,
+      static_cast<int>(schedule_.fix_and_propagate_backtracks), integrality_tolerance_);
+  s.work += result.fixed + result.backtracks;
+  if (!result.x.empty()) (void)offer_from(kFixAndPropagate, result.x);
   s.seconds += clock.elapsed_seconds();
 }
 

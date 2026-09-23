@@ -418,6 +418,43 @@ const std::vector<OptionSpec>& Options::registry() {
                  0.0,
                  0.0,
                  {"auto", "on", "off"}});
+    s.push_back({"pdhg_feasibility_pump",
+                 OptionType::Bool,
+                 false,
+                 "When mip_heur_pump is on (or auto follows mip_heuristics): solve the "
+                 "pump's L1-projection LP through the restarted PDHG instead of whatever "
+                 "algorithm would otherwise pick (#509; Fischetti, Glover and Lodi 2005 for "
+                 "the pump; Corduk, Anjos and Vannelli, arXiv:2510.20499, for pairing it with "
+                 "a first-order LP engine). Does nothing when the pump itself is off. PDHG "
+                 "has no warm start between rounds yet, so every round is a cold solve either "
+                 "way. OFF until the MIPLIB A/B says whether the PDHG projection pays for "
+                 "itself over the default engine on the LPs the pump actually solves.",
+                 0.0,
+                 0.0,
+                 {}});
+    s.push_back({"mip_heur_fix_and_propagate",
+                 OptionType::String,
+                 std::string("auto"),
+                 "Fix-and-propagate at the root (#509; Mexi et al., \"Scylla: a matrix-free "
+                 "fix-propagate-and-project heuristic for mixed-integer optimization\", "
+                 "arXiv:2307.03466; Corduk, Anjos and Vannelli, arXiv:2510.20499): solve the "
+                 "root relaxation through PDHG, sort the integer columns by that point's "
+                 "fractionality least fractional first, fix each to its rounded value with "
+                 "row-activity propagation after every fix, backtrack up to "
+                 "mip_fix_and_propagate_backtracks times on a propagated infeasibility, and "
+                 "repair() whatever rows are still violated - repair() stands in for "
+                 "Feasibility Jump (#506), not built yet. auto follows mip_heuristics.",
+                 0.0,
+                 0.0,
+                 {"auto", "on", "off"}});
+    s.push_back({"mip_fix_and_propagate_backtracks",
+                 OptionType::Int,
+                 std::int64_t{5},
+                 "Backtracks fix-and-propagate may spend in total before it stops undoing "
+                 "fixes and hands what is left to repair() (#509).",
+                 0.0,
+                 kNoLimit,
+                 {}});
     s.push_back({"mip_heur_rins",
                  OptionType::String,
                  std::string("auto"),

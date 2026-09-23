@@ -186,7 +186,8 @@ std::vector<double> feasibility_pump(const Model& model,
                                      const std::vector<Index>& integer_columns,
                                      const std::vector<double>& start,
                                      const Options& lp_options, int max_rounds,
-                                     double integrality_tolerance, Count* lp_solves) {
+                                     double integrality_tolerance, Count* lp_solves,
+                                     PumpEngine engine) {
   *lp_solves = 0;
   if (integer_columns.empty()) return {};
   // The projection LP: the model's rows and bounds, every column continuous, and an
@@ -249,12 +250,230 @@ std::vector<double> feasibility_pump(const Model& model,
         lp.col_cost[u] = -1.0;
       }
     }
-    const Solution projected = solve(lp, lp_options);
+    // PumpEngine::kPdhg (#509) forces the projection through the restarted PDHG instead of
+    // whatever "algorithm" would otherwise pick; solve_pdhg has no warm start from a
+    // previous iterate (see the header comment on PumpEngine), so this is a cold solve every
+    // round like the simplex path's, not a faked warm one.
+    Options projection_options = lp_options;
+    if (engine == PumpEngine::kPdhg) projection_options.set_string("algorithm", "pdhg");
+    const Solution projected = solve(lp, projection_options);
     ++*lp_solves;
     if (projected.status != SolveStatus::kOptimal) return {};
     x = projected.col_value;
   }
   return {};
+}
+
+bool propagate_bounds(const Model& model, std::vector<double>* col_lower_io,
+                      std::vector<double>* col_upper_io, double integrality_tolerance) {
+  std::vector<double>& col_lower = *col_lower_io;
+  std::vector<double>& col_upper = *col_upper_io;
+  const Index rows = model.num_rows();
+  const CsrView by_row(model.matrix);
+
+  // Every integer column rounded, and every box checked, before any row is read - the same
+  // order branch_and_bound's propagate() uses (#328 there): a column that appears in no row
+  // still needs its own box rounded and checked.
+  for (Index j = 0; j < model.num_cols(); ++j) {
+    const auto u = static_cast<std::size_t>(j);
+    if (model.col_type[u] == VarType::kInteger) {
+      if (is_finite_bound(col_lower[u])) {
+        const double rounded = std::ceil(col_lower[u] - integrality_tolerance);
+        if (rounded != col_lower[u]) col_lower[u] = rounded;
+      }
+      if (is_finite_bound(col_upper[u])) {
+        const double rounded = std::floor(col_upper[u] + integrality_tolerance);
+        if (rounded != col_upper[u]) col_upper[u] = rounded;
+      }
+    }
+    if (col_lower[u] > col_upper[u] + tol::kPrimalFeasibility) return false;
+  }
+
+  // A handful of sweeps: Savelsbergh's observation is that most of the tightening happens in
+  // the first pass or two, and propagation to a fixed point can be slow for what it adds.
+  for (int sweep = 0; sweep < 3; ++sweep) {
+    bool changed = false;
+    for (Index i = 0; i < rows; ++i) {
+      const auto ui = static_cast<std::size_t>(i);
+      const ColumnView row = by_row.row(i);
+
+      // Activity bounds implied by the current column bounds.
+      double min_activity = 0.0;
+      double max_activity = 0.0;
+      bool min_infinite = false;
+      bool max_infinite = false;
+      for (Index k = 0; k < row.size; ++k) {
+        const auto j = static_cast<std::size_t>(row.rows[k]);
+        const double a = row.values[k];
+        const double lo = col_lower[j];
+        const double hi = col_upper[j];
+        const double low_term = a > 0.0 ? a * lo : a * hi;
+        const double high_term = a > 0.0 ? a * hi : a * lo;
+        if (std::isinf(low_term))
+          min_infinite = true;
+        else
+          min_activity += low_term;
+        if (std::isinf(high_term))
+          max_infinite = true;
+        else
+          max_activity += high_term;
+      }
+
+      // Infeasible by activity alone: no assignment inside the current box can satisfy it.
+      if (!min_infinite && is_finite_bound(model.row_upper[ui]) &&
+          min_activity > model.row_upper[ui] + tol::kPrimalFeasibility) {
+        return false;
+      }
+      if (!max_infinite && is_finite_bound(model.row_lower[ui]) &&
+          max_activity < model.row_lower[ui] - tol::kPrimalFeasibility) {
+        return false;
+      }
+
+      // Implied column bounds: for a_j > 0 and a row upper bound, a_j x_j <= ru - (min
+      // activity of the others), and symmetrically for the other three combinations.
+      for (Index k = 0; k < row.size; ++k) {
+        const auto j = static_cast<std::size_t>(row.rows[k]);
+        const double a = row.values[k];
+        if (a == 0.0) continue;
+        const double lo = col_lower[j];
+        const double hi = col_upper[j];
+        const double own_low = a > 0.0 ? a * lo : a * hi;
+        const double own_high = a > 0.0 ? a * hi : a * lo;
+
+        if (!min_infinite && is_finite_bound(model.row_upper[ui]) && !std::isinf(own_low)) {
+          const double slack = model.row_upper[ui] - (min_activity - own_low);
+          const double implied = slack / a;
+          if (a > 0.0 && implied < hi - 1e-9) {
+            col_upper[j] = implied;
+            changed = true;
+          } else if (a < 0.0 && implied > lo + 1e-9) {
+            col_lower[j] = implied;
+            changed = true;
+          }
+        }
+        if (!max_infinite && is_finite_bound(model.row_lower[ui]) && !std::isinf(own_high)) {
+          const double slack = model.row_lower[ui] - (max_activity - own_high);
+          const double implied = slack / a;
+          if (a > 0.0 && implied > lo + 1e-9) {
+            col_lower[j] = implied;
+            changed = true;
+          } else if (a < 0.0 && implied < hi - 1e-9) {
+            col_upper[j] = implied;
+            changed = true;
+          }
+        }
+
+        // An integer column may be tightened to whole numbers, where propagation earns most
+        // of its keep on a MILP.
+        if (model.col_type[j] == VarType::kInteger) {
+          if (is_finite_bound(col_lower[j])) {
+            const double rounded = std::ceil(col_lower[j] - integrality_tolerance);
+            if (rounded != col_lower[j]) col_lower[j] = rounded;
+          }
+          if (is_finite_bound(col_upper[j])) {
+            const double rounded = std::floor(col_upper[j] + integrality_tolerance);
+            if (rounded != col_upper[j]) col_upper[j] = rounded;
+          }
+        }
+        if (col_lower[j] > col_upper[j] + tol::kPrimalFeasibility) return false;
+      }
+    }
+    if (!changed) break;
+  }
+  return true;
+}
+
+FixAndPropagateResult fix_and_propagate(const Model& model,
+                                        const std::vector<Index>& integer_columns,
+                                        const std::vector<double>& pdhg_point,
+                                        int max_backtracks, double integrality_tolerance) {
+  FixAndPropagateResult result;
+  result.col_lower = model.col_lower;
+  result.col_upper = model.col_upper;
+
+  // Least fractional first (Scylla, arXiv:2307.03466; see the file header comment): lock in
+  // what the point already agrees on before touching what it does not. Ties by column index,
+  // so a rerun on the same point makes the same fixes.
+  std::vector<Index> order = integer_columns;
+  std::sort(order.begin(), order.end(), [&](Index a, Index b) {
+    const double fa = std::fabs(pdhg_point[static_cast<std::size_t>(a)] -
+                                std::round(pdhg_point[static_cast<std::size_t>(a)]));
+    const double fb = std::fabs(pdhg_point[static_cast<std::size_t>(b)] -
+                                std::round(pdhg_point[static_cast<std::size_t>(b)]));
+    if (fa != fb) return fa < fb;
+    return a < b;
+  });
+
+  int backtracks_left = max_backtracks;
+  for (const Index j : order) {
+    const auto u = static_cast<std::size_t>(j);
+    // Already pinned - by an earlier fix's propagation, or the model itself: nothing to
+    // decide.
+    if (result.col_lower[u] >= result.col_upper[u] - 1e-9) {
+      ++result.fixed;
+      continue;
+    }
+
+    const std::vector<double> snapshot_lower = result.col_lower;
+    const std::vector<double> snapshot_upper = result.col_upper;
+    const double down = std::floor(pdhg_point[u]);
+    const double up = std::ceil(pdhg_point[u]);
+    const double nearest = std::round(pdhg_point[u]);
+    const double rounded = clamp_to(nearest, result.col_lower[u], result.col_upper[u]);
+
+    result.col_lower[u] = rounded;
+    result.col_upper[u] = rounded;
+    if (propagate_bounds(model, &result.col_lower, &result.col_upper, integrality_tolerance)) {
+      ++result.fixed;
+      continue;
+    }
+
+    // Backtrack: undo the whole sweep this fix caused (not just this column - propagation
+    // may have tightened others before the row that failed), and try the other rounding
+    // once, the same one-level backtrack diving uses (dive(), branch_and_bound_heuristics.cpp).
+    result.col_lower = snapshot_lower;
+    result.col_upper = snapshot_upper;
+    if (backtracks_left <= 0 || down == up) continue;  // no other rounding, or out of budget
+    --backtracks_left;
+    ++result.backtracks;
+    const double other = rounded == down ? up : down;
+    if (other < model.col_lower[u] - 1e-9 || other > model.col_upper[u] + 1e-9) continue;
+    result.col_lower[u] = other;
+    result.col_upper[u] = other;
+    if (propagate_bounds(model, &result.col_lower, &result.col_upper, integrality_tolerance)) {
+      ++result.fixed;
+    } else {
+      // Both roundings propagate to an empty box: leave the column free at its pre-fix box.
+      result.col_lower = snapshot_lower;
+      result.col_upper = snapshot_upper;
+    }
+  }
+
+  // The point repair() gets: every fixed column at its fix, every other column - integer or
+  // continuous - clamped into whatever box propagation left it, nearest integer for the
+  // integer ones still free.
+  result.x.resize(static_cast<std::size_t>(model.num_cols()));
+  std::vector<char> is_integer(static_cast<std::size_t>(model.num_cols()), 0);
+  for (const Index j : integer_columns) is_integer[static_cast<std::size_t>(j)] = 1;
+  for (Index j = 0; j < model.num_cols(); ++j) {
+    const auto u = static_cast<std::size_t>(j);
+    double v = u < pdhg_point.size() ? pdhg_point[u] : 0.0;
+    if (is_integer[u]) v = std::round(v);
+    // A plain clamp, not clamp_to(): that helper ceils/floors the BOUNDS themselves, which
+    // is right when it snaps an integer column to an integer box but would wrongly round a
+    // continuous column's box here.
+    v = std::max(v, result.col_lower[u]);
+    v = std::min(v, result.col_upper[u]);
+    result.x[u] = v;
+  }
+
+  Count moves = 0;
+  const int budget = static_cast<int>(
+      std::min<std::size_t>(4 * integer_columns.size() + 10, std::size_t{10000}));
+  result.repair_ran = true;
+  result.feasible =
+      repair(model, integer_columns, &result.x, budget, tol::kPrimalFeasibility, &moves);
+  return result;
 }
 
 const char* to_string(DiveRule rule) {
@@ -381,6 +600,7 @@ HeuristicSchedule HeuristicSchedule::from(const Options& options) {
   s.pump = resolve_switch(options, "mip_heur_pump", master);
   s.rins = resolve_switch(options, "mip_heur_rins", master);
   s.rens = resolve_switch(options, "mip_heur_rens", master);
+  s.fix_and_propagate = resolve_switch(options, "mip_heur_fix_and_propagate", master);
   s.dive[static_cast<std::size_t>(DiveRule::kFractional)] =
       resolve_switch(options, "mip_heur_dive_fractional", master);
   s.dive[static_cast<std::size_t>(DiveRule::kCoefficient)] =
@@ -396,12 +616,14 @@ HeuristicSchedule HeuristicSchedule::from(const Options& options) {
   s.dive_frequency = options.get_int("mip_dive_frequency");
   s.dive_lp_resolves = static_cast<int>(options.get_int("mip_dive_lp_resolves"));
   s.pump_rounds = static_cast<int>(options.get_int("mip_pump_rounds"));
+  s.pump_pdhg_projection = options.get_bool("pdhg_feasibility_pump");
+  s.fix_and_propagate_backtracks = options.get_int("mip_fix_and_propagate_backtracks");
   s.seconds_budgets = !options.get_bool("deterministic");
   return s;
 }
 
 bool HeuristicSchedule::any_optional() const {
-  return lock_rounding || repair || pump || rins || rens ||
+  return lock_rounding || repair || pump || rins || rens || fix_and_propagate ||
          dive[static_cast<std::size_t>(DiveRule::kCoefficient)] ||
          dive[static_cast<std::size_t>(DiveRule::kVectorLength)] ||
          dive[static_cast<std::size_t>(DiveRule::kGuided)];
@@ -418,9 +640,10 @@ std::string HeuristicSchedule::names() const {
   add(repair, "repair");
   for (std::size_t r = 0; r < kDiveRules; ++r)
     add(dive[r], to_string(static_cast<DiveRule>(r)));
-  add(pump, "feasibility pump");
+  add(pump, pump_pdhg_projection ? "feasibility pump (pdhg)" : "feasibility pump");
   add(rins, "RINS");
   add(rens, "RENS");
+  add(fix_and_propagate, "fix-and-propagate");
   return out;
 }
 

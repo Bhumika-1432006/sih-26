@@ -632,6 +632,7 @@ Solution BranchAndBound::run() {
       // all came back empty: its value is an incumbent where there is none, and it costs
       // LP solves.
       if (node_index == 0) run_root_pump(relaxation);
+      if (node_index == 0) run_fix_and_propagate();
     }
 
     // The branching decision, with the node's bounds still entered: strong branching

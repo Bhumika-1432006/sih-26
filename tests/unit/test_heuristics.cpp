@@ -62,6 +62,7 @@ constexpr const char* kEverySwitch[] = {"mip_heur_lock_rounding",
                                         "mip_heur_pump",
                                         "mip_heur_rins",
                                         "mip_heur_rens",
+                                        "mip_heur_fix_and_propagate",
                                         "mip_heur_dive_fractional",
                                         "mip_heur_dive_coefficient",
                                         "mip_heur_dive_vector_length",
@@ -167,6 +168,90 @@ TEST(Heuristics, TheFeasibilityPumpFindsAPointOnACoveringModel) {
   ASSERT_FALSE(x.empty()) << "after " << solves << " projections";
   EXPECT_TRUE(feasible(m, x));
   EXPECT_GE(solves, 1);
+}
+
+// ---- #509: PDHG-projection pump, propagate_bounds(), fix-and-propagate ----------------------
+
+TEST(Heuristics, ThePdhgProjectionPumpFindsAFeasiblePointOrReportsItDidNotConverge) {
+  // The same covering model TheFeasibilityPumpFindsAPointOnACoveringModel uses, but with the
+  // L1-projection LP solved through PDHG (PumpEngine::kPdhg) instead of whatever `algorithm`
+  // would otherwise pick. feasibility_pump() bounds itself at max_rounds=20 projections
+  // either way, so this never runs unboundedly; what matters is that a non-empty answer is
+  // genuinely feasible, checked here independently of the pump and the projection engine -
+  // offer_incumbent() is the only real feasibility gate (file header comment), and this test
+  // holds the pump to the same standard.
+  const Model m = integer_model({{1, 1, 0, 0, 1}, {0, 1, 1, 1, 0}, {1, 0, 1, 0, 1}},
+                                {1.0, 1.0, 1.0}, {kInf, kInf, kInf}, {3, 2, 2, 4, 1}, 0.0, 1.0);
+  Options lp;
+  lp.set_bool("log_to_console", false);
+  Count solves = 0;
+  const std::vector<double> x = feasibility_pump(m, all_columns(m), {0.5, 0.5, 0.5, 0.5, 0.5},
+                                                 lp, 20, 1e-6, &solves, PumpEngine::kPdhg);
+  EXPECT_GE(solves, 1) << "the PDHG engine should have been called at least once";
+  EXPECT_LE(solves, 20) << "feasibility_pump() must not exceed max_rounds";
+  if (!x.empty()) {
+    EXPECT_TRUE(feasible(m, x)) << "a non-empty pump answer must be truly feasible";
+  }
+}
+
+TEST(Heuristics, PropagateBoundsTightensAnImpliedColumnBound) {
+  // x0 + x1 <= 5, x0 in [3, 4]: the row implies x1 <= 5 - 3 = 2, tighter than its own [0, 10].
+  const Model m = integer_model({{1, 1}}, {-kInf}, {5.0}, {0, 0}, 0.0, 10.0);
+  std::vector<double> lower{3.0, 0.0};
+  std::vector<double> upper{4.0, 10.0};
+  ASSERT_TRUE(propagate_bounds(m, &lower, &upper, 1e-6));
+  EXPECT_EQ(upper[1], 2.0);
+  EXPECT_EQ(lower[0], 3.0);
+  EXPECT_EQ(upper[0], 4.0);
+}
+
+TEST(Heuristics, PropagateBoundsCatchesAnEmptyBox) {
+  // x0 + x1 >= 10 with both columns in [0, 3]: the box can reach at most activity 6.
+  const Model m = integer_model({{1, 1}}, {10.0}, {kInf}, {0, 0}, 0.0, 3.0);
+  std::vector<double> lower = m.col_lower;
+  std::vector<double> upper = m.col_upper;
+  EXPECT_FALSE(propagate_bounds(m, &lower, &upper, 1e-6));
+}
+
+TEST(Heuristics, FixAndPropagateStaysWithinThePropagatedBoxAndHandsRepairAWellFormedPoint) {
+  const Model m = integer_model({{1, 1, 0, 0, 1}, {0, 1, 1, 1, 0}, {1, 0, 1, 0, 1}},
+                                {1.0, 1.0, 1.0}, {kInf, kInf, kInf}, {3, 2, 2, 4, 1}, 0.0, 1.0);
+  const std::vector<double> pdhg_point{0.9, 0.5, 0.1, 0.6, 0.4};
+  const FixAndPropagateResult result =
+      fix_and_propagate(m, all_columns(m), pdhg_point, 3, 1e-6);
+
+  ASSERT_EQ(result.x.size(), pdhg_point.size());
+  ASSERT_EQ(result.col_lower.size(), pdhg_point.size());
+  ASSERT_EQ(result.col_upper.size(), pdhg_point.size());
+  for (std::size_t j = 0; j < pdhg_point.size(); ++j) {
+    // propagate_bounds() only ever tightens, so every column it fixes - and every column it
+    // leaves a box for - sits inside the model's own bounds.
+    EXPECT_GE(result.col_lower[j], m.col_lower[j]) << "column " << j;
+    EXPECT_LE(result.col_upper[j], m.col_upper[j]) << "column " << j;
+    EXPECT_LE(result.col_lower[j], result.col_upper[j]) << "column " << j << " box collapsed";
+    // What repair() received (and, since it always runs here, returned) is a real number
+    // inside the model's original box - "well-formed" per the #509 plan.
+    EXPECT_TRUE(std::isfinite(result.x[j])) << "column " << j;
+    EXPECT_GE(result.x[j], m.col_lower[j] - 1e-9) << "column " << j;
+    EXPECT_LE(result.x[j], m.col_upper[j] + 1e-9) << "column " << j;
+  }
+  EXPECT_GE(result.fixed, 1) << "x0 at 0.9 is the least fractional column and should fix";
+  EXPECT_TRUE(result.repair_ran);
+  EXPECT_TRUE(feasible(m, result.x)) << "repair() should close the covering rows";
+}
+
+TEST(Heuristics, FixAndPropagateBacktracksWhenTheNearestRoundingPropagatesToEmpty) {
+  // x0 <= 0 forces x0 to its lower bound, but the point rounds it to 1 (nearest, the least
+  // fractional of the two columns): propagation of that fix must fail, so fix-and-propagate
+  // backtracks to the other rounding, 0, which propagates cleanly.
+  const Model m = integer_model({{1, 0}}, {-kInf}, {0.0}, {0, 0}, 0.0, 1.0);
+  const std::vector<double> pdhg_point{0.9, 0.5};
+  const FixAndPropagateResult result =
+      fix_and_propagate(m, all_columns(m), pdhg_point, 2, 1e-6);
+  EXPECT_GE(result.backtracks, 1);
+  EXPECT_EQ(result.col_lower[0], 0.0);
+  EXPECT_EQ(result.col_upper[0], 0.0);
+  EXPECT_TRUE(std::isfinite(result.x[0]));
 }
 
 TEST(Heuristics, EveryPointAHeuristicCallsFeasibleIsFeasible) {
@@ -279,6 +364,8 @@ TEST(Heuristics, TheSearchWithEveryHeuristicForcedOnAgreesWithBruteForce) {
         options.set_int("mip_dive_frequency", 1);
         options.set_bool("mip_dive_backtrack", true);
         options.set_int("mip_rens_nodes", 3);
+        options.set_bool("pdhg_feasibility_pump", true);
+        options.set_int("mip_fix_and_propagate_backtracks", 3);
       }
       const Solution solved = solve(m, options);
       ++compared;
@@ -369,6 +456,9 @@ TEST(Heuristics, EverySwitchResolvesAgainstTheMasterSwitch) {
   EXPECT_FALSE(s.pump);
   EXPECT_FALSE(s.rins);
   EXPECT_FALSE(s.rens);
+  EXPECT_FALSE(s.fix_and_propagate);
+  EXPECT_FALSE(s.pump_pdhg_projection)
+      << "pdhg_feasibility_pump is a plain bool, OFF by default";
   EXPECT_FALSE(s.dive[rule_index(DiveRule::kCoefficient)]);
   EXPECT_FALSE(s.dive[rule_index(DiveRule::kVectorLength)]);
   EXPECT_FALSE(s.dive[rule_index(DiveRule::kGuided)]);
@@ -382,6 +472,8 @@ TEST(Heuristics, EverySwitchResolvesAgainstTheMasterSwitch) {
   all.set_bool("mip_heuristics", true);
   s = HeuristicSchedule::from(all);
   EXPECT_TRUE(s.lock_rounding && s.repair && s.pump && s.rins && s.rens);
+  EXPECT_TRUE(s.fix_and_propagate)
+      << "mip_heur_fix_and_propagate auto follows mip_heuristics too";
   for (std::size_t r = 0; r < kDiveRules; ++r) EXPECT_TRUE(s.dive[r]) << r;
   EXPECT_TRUE(s.any_optional());
   all.set_string("mip_heur_rins", "off");
