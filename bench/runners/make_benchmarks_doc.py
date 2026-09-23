@@ -1905,7 +1905,7 @@ def gpu_real_section(path: Path | None) -> str:
             return "—"
         try:
             s = float(cpu["seconds"]) / float(gpu_r["seconds"])
-            return f"**{s:.2f}×**" if s > 1 else f"{s:.2f}×"
+            return f"{s:.2f}×"
         except (ZeroDivisionError, ValueError):
             return "—"
 

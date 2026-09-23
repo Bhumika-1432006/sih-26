@@ -113,7 +113,11 @@ def mps_dimensions(mps: Path) -> tuple[int, int, int]:
     """Count rows, cols, nonzeros from a free-format MPS file (approx)."""
     rows = cols = nnz = 0
     section = ""
-    with mps.open(encoding="utf-8", errors="replace") as fh:
+    open_fn = open
+    if str(mps).endswith(".gz"):
+        import gzip
+        open_fn = gzip.open
+    with open_fn(mps, "rt", encoding="utf-8", errors="replace") as fh:
         for line in fh:
             tok = line.split()
             if not tok:
