@@ -1862,6 +1862,79 @@ def gpu_section(path: Path | None) -> str:
     return chr(10).join(lines)
 
 
+def gpu_real_section(path: Path | None) -> str:
+    """CPU vs GPU PDHG on non-synthetic instances (#446)."""
+    if path is None:
+        return chr(10).join([
+            "Not yet run. Reproduce with:",
+            "",
+            "```",
+            "python bench/runners/fetch_mittelmann.py",
+            "python bench/runners/gpu_real_instances.py --binary build_gpu/sankhya",
+            "```",
+            "",
+        ])
+    rows = read_csv(path)
+    if not rows:
+        return "No GPU real-instance results yet." + chr(10)
+
+    commit = rows[0].get("git_commit", "unknown")
+    machine = rows[0].get("machine", "unknown")
+    gpu = rows[0].get("gpu", "") or "not recorded"
+    if "-dirty" in commit:
+        return (f"`{path.name}` is stamped `{commit}`: produced from a modified tree. "
+                "Re-run on a clean checkout of a main commit." + chr(10))
+
+    instances = sorted({r["instance"] for r in rows})
+
+    def lookup_real(instance: str, alg: str, tol: float) -> dict | None:
+        for r in rows:
+            try:
+                same_tol = abs(float(r.get("tolerance", "nan")) - tol) <= 1e-3 * tol
+            except ValueError:
+                same_tol = False
+            if r.get("instance") == instance and r.get("algorithm") == alg and same_tol:
+                return r
+        return None
+
+    def fmt_s(r: dict | None) -> str:
+        return f"{float(r['seconds']):.3f}" if r else "—"
+
+    def fmt_speedup(cpu: dict | None, gpu_r: dict | None) -> str:
+        if not cpu or not gpu_r:
+            return "—"
+        try:
+            s = float(cpu["seconds"]) / float(gpu_r["seconds"])
+            return f"**{s:.2f}×**" if s > 1 else f"{s:.2f}×"
+        except (ZeroDivisionError, ValueError):
+            return "—"
+
+    lines = [
+        f"Source CSV: `bench/results/{path.name}`  ",
+        f"Commit `{commit}` · machine `{machine}`  ",
+        f"GPU: {gpu}",
+        "",
+        "Same protocol as §1g: PDHG alone, solver clock, warm-up GPU solve per instance. "
+        "Report the result whichever way it goes.",
+        "",
+        "| instance | rows | CPU 1e-4 (s) | GPU 1e-4 (s) | speedup | CPU 1e-8 (s) | GPU 1e-8 (s) | speedup |",
+        "|----------|-----:|-------------:|-------------:|--------:|-------------:|-------------:|--------:|",
+    ]
+    for inst in instances:
+        cpu4 = lookup_real(inst, "pdhg-cpu", 1e-4)
+        gpu4 = lookup_real(inst, "pdhg-cuda", 1e-4)
+        cpu8 = lookup_real(inst, "pdhg-cpu", 1e-8)
+        gpu8 = lookup_real(inst, "pdhg-cuda", 1e-8)
+        nrows = cpu4.get("rows", "") if cpu4 else ""
+        lines.append(
+            f"| `{inst}` | {nrows} | {fmt_s(cpu4)} | {fmt_s(gpu4)} | {fmt_speedup(cpu4, gpu4)} "
+            f"| {fmt_s(cpu8)} | {fmt_s(gpu8)} | {fmt_speedup(cpu8, gpu8)} |"
+        )
+
+    lines.append("")
+    return chr(10).join(lines)
+
+
 def main() -> int:
     # Both tiers, separately. Reporting only one was the whole of issue #53: the small set
     # is 8/8, which reads as a solved problem, and the medium tier is the number that says
@@ -1890,6 +1963,7 @@ def main() -> int:
     auto_scale_csvs = {shape: newest(f"auto-scale-{shape}-*.csv")
                        for shape in ("random", "staircase", "refinery")}
     gpu_csv = newest("gpu-*.csv")
+    gpu_real_csv = newest("gpu-real-*.csv")
 
     # Legacy untagged CSVs predate the tier tag; fall back so an old results directory still
     # generates something rather than failing.
@@ -1974,6 +2048,9 @@ Small problems spend more time on data transfer than on computation; the crossov
 below is where the GPU overtakes the CPU.
 
 {gpu_section(gpu_csv)}
+#### 1g.1 GPU on non-synthetic instances
+
+{gpu_real_section(gpu_real_csv)}
 ---
 
 ### 1f. Scale — how far up this goes
