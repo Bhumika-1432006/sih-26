@@ -210,29 +210,38 @@ def mps_dimensions(mps: Path) -> tuple[int, int, int]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--binary", type=Path, required=True)
+    parser.add_argument("--binary", type=Path, required=False, default=None)
     parser.add_argument("--time-limit", type=float, default=300.0)
     parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--pdlp-only", action="store_true",
+                        help="run only the OR-Tools PDLP side (no GPU binary needed); "
+                             "useful for verifying the PDLP API fixes without the card")
     args = parser.parse_args()
+
+    if not args.pdlp_only and args.binary is None:
+        parser.error("--binary is required unless --pdlp-only is set")
 
     commit = git_commit()
     machine = f"{platform.system()}-{platform.machine()}"
-    gpu = gpu_description(args.binary)
+    gpu = gpu_description(args.binary) if args.binary else "pdlp-only"
     timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     result_rows: list[dict] = []
 
-    print("GPU PDHG vs OR-Tools PDLP head-to-head")
-    print(f"binary: {args.binary}")
+    print("GPU PDHG vs OR-Tools PDLP head-to-head" + (" [PDLP only]" if args.pdlp_only else ""))
+    if args.binary:
+        print(f"binary: {args.binary}")
     print(f"commit: {commit}  machine: {machine}  gpu: {gpu}\n")
     print(f"{'instance':>30}  {'solver':>14}  {'tol':>6}  {'status':>12}  {'seconds':>9}  {'ratio':>8}")
     print("-" * 90)
 
     def process_instance(name: str, mps: Path) -> None:
         r, c, nz = mps_dimensions(mps)
-        # warm-up GPU for this instance
-        run_our_gpu(args.binary, mps, TOLERANCES[0], args.time_limit)
+        if not args.pdlp_only:
+            # warm-up GPU for this instance
+            run_our_gpu(args.binary, mps, TOLERANCES[0], args.time_limit)
         for tol in TOLERANCES:
-            our = run_our_gpu(args.binary, mps, tol, args.time_limit)
+            our = run_our_gpu(args.binary, mps, tol, args.time_limit) if not args.pdlp_only \
+                else {"status": "skipped", "objective": None, "iterations": "", "seconds": 0.0, "wall": 0.0}
             pdlp = run_pdlp(mps, tol, args.time_limit)
             ratio_str = "—"
             if pdlp["seconds"] and our["seconds"]:
