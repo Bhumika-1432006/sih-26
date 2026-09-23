@@ -57,7 +57,6 @@ PDLP_RUNNER_SCRIPT = r"""
 import sys, time, json
 try:
     from ortools.linear_solver.python import model_builder as mb
-    from ortools.linear_solver import pywraplp
 except ImportError:
     print(json.dumps({"error": "ortools not installed"}))
     sys.exit(1)
@@ -90,9 +89,10 @@ t0 = time.perf_counter()
 result_status = solver.solve(model)
 elapsed = time.perf_counter() - t0
 
-feasible = result_status in (mb.SolveStatus.OPTIMAL, mb.SolveStatus.FEASIBLE)
+status_str = str(result_status).split(".")[-1].lower()
+feasible = status_str in ("optimal", "feasible")
 print(json.dumps({
-    "status": str(result_status).split(".")[-1].lower(),
+    "status": status_str,
     "objective": solver.objective_value if feasible else None,
     "wall_seconds": elapsed,
 }))
@@ -227,8 +227,6 @@ def main() -> int:
     print(f"{'instance':>30}  {'solver':>14}  {'tol':>6}  {'status':>12}  {'seconds':>9}  {'ratio':>8}")
     print("-" * 90)
 
-    our_times: dict[tuple, float] = {}
-
     def process_instance(name: str, mps: Path) -> None:
         r, c, nz = mps_dimensions(mps)
         # warm-up GPU for this instance
@@ -236,8 +234,6 @@ def main() -> int:
         for tol in TOLERANCES:
             our = run_our_gpu(args.binary, mps, tol, args.time_limit)
             pdlp = run_pdlp(mps, tol, args.time_limit)
-            key = (name, tol)
-            our_times[key] = our["seconds"]
             ratio_str = "—"
             if pdlp["seconds"] and our["seconds"]:
                 ratio = pdlp["seconds"] / our["seconds"]
