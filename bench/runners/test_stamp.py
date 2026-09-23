@@ -41,6 +41,16 @@ def test_head_fallback_matches_git() -> None:
     check(s.endswith("-dirty") == stamp.repo_dirty(), "the -dirty suffix follows the tree", s)
 
 
+def test_a_binary_that_does_not_answer_falls_back_to_head_and_says_so() -> None:
+    import io, contextlib
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        s = stamp.stamp("no-such-sankhya-binary")
+    check(s.startswith(stamp.repo_head()), "an unanswering binary falls back to HEAD", s)
+    check("gave no version line" in err.getvalue(), "and the fallback is announced on stderr",
+          err.getvalue().strip()[:90])
+
+
 def test_built_binary_stamps_its_own_commit() -> None:
     root = Path(__file__).resolve().parents[2]
     binary = next((p for p in (root / "build" / "sankhya.exe", root / "build" / "sankhya")
@@ -60,6 +70,7 @@ if __name__ == "__main__":
     print("stamp.py (#433)")
     test_parse_version_line()
     test_head_fallback_matches_git()
+    test_a_binary_that_does_not_answer_falls_back_to_head_and_says_so()
     test_built_binary_stamps_its_own_commit()
     print(f"{FAILURES} check(s) FAILED" if FAILURES else "all checks passed")
     sys.exit(1 if FAILURES else 0)

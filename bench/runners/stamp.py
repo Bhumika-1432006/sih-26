@@ -77,6 +77,14 @@ def stamp(binary: str | Path | None = None) -> str:
     the binary and the tree name different commits."""
     built = binary_commit(binary)
     head = repo_head()
+    if binary and not built:
+        # A binary that does not answer is the case this module exists for, silently
+        # falling back to the tree would be the old behaviour with a new name. On the
+        # Windows box it is Smart App Control refusing a freshly linked file for a few
+        # minutes; the fix is to run the stamp again, not to trust HEAD.
+        print(f"stamp: {binary} gave no version line; stamping the tree at "
+              f"{head or 'unknown'} instead - re-run if the binary was blocked (#433)",
+              file=sys.stderr)
     if built and head and not head.startswith(built) and not built.startswith(head):
         print(f"stamp: the binary was built at {built} but the tree is at {head}; the CSV "
               f"is stamped {built}, which is what ran (#433)", file=sys.stderr)
