@@ -28,6 +28,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+import stamp  # noqa: E402  (#433: stamps from the binary)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "data" / "netlib"
@@ -40,11 +41,11 @@ CSV_COLUMNS = [
 ]
 
 
-def git_commit() -> str:
-    r = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO_ROOT,
-                       capture_output=True, text=True, check=False)
-    return r.stdout.strip() or "unknown"
-
+def git_commit(binary=None) -> str:
+    """The commit this CSV is stamped with: the binary's own, read from `sankhya
+    version`, with `-dirty` from the tree; HEAD only when no binary answers (#433,
+    bench/runners/stamp.py)."""
+    return stamp.stamp(binary)
 
 def as_number(value):
     if value is None:
@@ -118,7 +119,7 @@ def main() -> int:
     unknown = [n for n in names if n not in reference]
     if unknown:
         raise SystemExit("not in data/netlib/reference.json: " + ", ".join(unknown))
-    commit = git_commit()
+    commit = git_commit(args.binary)
     machine = f"{platform.system()}-{platform.machine()}"
     timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
     rows: list[dict] = []

@@ -48,6 +48,7 @@ import platform
 import subprocess
 import sys
 from pathlib import Path
+import stamp  # noqa: E402  (#433: stamps from the binary)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = REPO_ROOT / "data" / "netlib"
@@ -72,14 +73,11 @@ FIELDS = [
 ]
 
 
-def git_commit() -> str:
-    try:
-        out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True,
-                             text=True, cwd=REPO_ROOT)
-        return out.stdout.strip() or "unknown"
-    except OSError:
-        return "unknown"
-
+def git_commit(binary=None) -> str:
+    """The commit this CSV is stamped with: the binary's own, read from `sankhya
+    version`, with `-dirty` from the tree; HEAD only when no binary answers (#433,
+    bench/runners/stamp.py)."""
+    return stamp.stamp(binary)
 
 def relative(a: float, b: float) -> float:
     return abs(a - b) / max(1.0, abs(b))
@@ -175,7 +173,7 @@ def main() -> int:
             "relative_highs_vs_published": repr(d_published),
             "verdict": verdict,
             "highs_status": highs_status,
-            "git_commit": git_commit(),
+            "git_commit": git_commit(args.binary),
             "machine": f"{platform.system()}-{platform.machine()}",
             "timestamp_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         })
@@ -184,7 +182,7 @@ def main() -> int:
         print(f"{name:<10} {shown:>14} {d_published:>16.1e}  {verdict}")
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    out_path = args.out or (RESULTS_DIR / f"cross-check-highs-{git_commit()}.csv")
+    out_path = args.out or (RESULTS_DIR / f"cross-check-highs-{git_commit(args.binary)}.csv")
     with out_path.open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=FIELDS)
         writer.writeheader()

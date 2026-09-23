@@ -26,6 +26,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+import stamp  # noqa: E402  (#433: stamps from the binary)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 RESULTS_DIR = REPO_ROOT / "bench" / "results"
@@ -70,19 +71,11 @@ SIZES = [
 TOLERANCES = [1e-4, 1e-8]
 
 
-def git_commit() -> str:
-    """Short commit hash, "-dirty" appended when any tracked file is modified: a CSV that
-    cites a commit must have been produced by that commit's tree (the same rule as
-    netlib.py and scale.py)."""
-    r = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO_ROOT,
-                       capture_output=True, text=True, check=False)
-    commit = r.stdout.strip() or "unknown"
-    status = subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"],
-                            cwd=REPO_ROOT, capture_output=True, text=True, check=False)
-    if status.stdout.strip():
-        commit += "-dirty"
-    return commit
-
+def git_commit(binary=None) -> str:
+    """The commit this CSV is stamped with: the binary's own, read from `sankhya
+    version`, with `-dirty` from the tree; HEAD only when no binary answers (#433,
+    bench/runners/stamp.py)."""
+    return stamp.stamp(binary)
 
 def gpu_description(binary: Path) -> str:
     """The device the binary sees, from `sankhya --version` (name, compute, VRAM), so the
@@ -202,7 +195,7 @@ def main() -> int:
     parser.add_argument("--out", type=Path, default=None)
     args = parser.parse_args()
 
-    commit = git_commit()
+    commit = git_commit(args.binary)
     machine = f"{platform.system()}-{platform.machine()}"
     gpu = gpu_description(args.binary)
     timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
