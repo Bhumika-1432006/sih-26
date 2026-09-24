@@ -104,7 +104,9 @@ struct Workspace {
   std::vector<bool> col_implied_integer;
 };
 
-[[nodiscard]] bool finite(double v) { return std::fabs(v) < kInfinity; }
+[[nodiscard]] bool finite(double v) {
+  return std::fabs(v) < kInfinity;
+}
 
 /// Is `value` sitting on `bound`, to the precision a solver can be asked for AT THAT SCALE?
 ///
@@ -1517,39 +1519,20 @@ Result presolve(const Model& model, const Options& options, Logger& logger) {
   report.passes = passes_run;
   for (const Record& record : result.records) {
     switch (record.kind) {
-      case Record::Kind::kEmptyRow:
-        ++report.empty_rows;
-        break;
-      case Record::Kind::kRedundantRow:
-        ++report.redundant_rows;
-        break;
-      case Record::Kind::kSingletonRow:
-        ++report.singleton_rows;
-        break;
-      case Record::Kind::kFixedColumn:
-        ++report.fixed_columns;
-        break;
-      case Record::Kind::kEmptyColumn:
-        ++report.empty_columns;
-        break;
-      case Record::Kind::kDualFixedColumn:
-        ++report.dual_fixed_columns;
-        break;
-      case Record::Kind::kParallelRow:
-        ++report.parallel_rows;
-        break;
-      case Record::Kind::kDominatedColumn:
-        ++report.dominated_columns;
-        break;
+      case Record::Kind::kEmptyRow: ++report.empty_rows; break;
+      case Record::Kind::kRedundantRow: ++report.redundant_rows; break;
+      case Record::Kind::kSingletonRow: ++report.singleton_rows; break;
+      case Record::Kind::kFixedColumn: ++report.fixed_columns; break;
+      case Record::Kind::kEmptyColumn: ++report.empty_columns; break;
+      case Record::Kind::kDualFixedColumn: ++report.dual_fixed_columns; break;
+      case Record::Kind::kParallelRow: ++report.parallel_rows; break;
+      case Record::Kind::kDominatedColumn: ++report.dominated_columns; break;
       case Record::Kind::kFreeColumnSingleton:
         ++report.free_column_singletons;
         if (record.implied_free) ++report.implied_free_column_singletons;
         break;
-      case Record::Kind::kDoubletonEquation:
-        ++report.doubleton_equations;
-        break;
-      case Record::Kind::kForcingRow:
-        break;
+      case Record::Kind::kDoubletonEquation: ++report.doubleton_equations; break;
+      case Record::Kind::kForcingRow: break;
     }
   }
   // A singleton row's whole effect is a tightened column bound, so it is counted as one as
@@ -1654,15 +1637,10 @@ Solution postsolve(const Result& result, const Model& original, const Solution& 
       case Record::Kind::kFixedColumn:
       case Record::Kind::kEmptyColumn:
       case Record::Kind::kDualFixedColumn:
-      case Record::Kind::kDominatedColumn:
-        removed = rec.index;
-        break;
+      case Record::Kind::kDominatedColumn: removed = rec.index; break;
       case Record::Kind::kFreeColumnSingleton:
-      case Record::Kind::kDoubletonEquation:
-        removed = rec.column;
-        break;
-      default:
-        break;
+      case Record::Kind::kDoubletonEquation: removed = rec.column; break;
+      default: break;
     }
     if (removed >= 0) column_removed_at[static_cast<std::size_t>(removed)] = p;
   }
@@ -1689,8 +1667,7 @@ Solution postsolve(const Result& result, const Model& original, const Solution& 
       case Record::Kind::kParallelRow:
         row_removed_at[static_cast<std::size_t>(rec.index)] = p;
         break;
-      default:
-        break;
+      default: break;
     }
   }
 

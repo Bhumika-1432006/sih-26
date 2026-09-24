@@ -1410,7 +1410,9 @@ const OptionSpec* Options::find_spec(const std::string& name) {
   return &registry()[it->second];
 }
 
-bool Options::exists(const std::string& name) { return find_spec(name) != nullptr; }
+bool Options::exists(const std::string& name) {
+  return find_spec(name) != nullptr;
+}
 
 const OptionValue& Options::value_of(const std::string& name) const {
   return values_[require_index(name)];
