@@ -280,6 +280,7 @@ set(SANKHYA_CORE_SOURCES
   src/ipm/ipm.cpp
   src/pdhg/pdhg.cpp
   src/pdhg/pdhg_evaluate.cpp
+  src/pdhg/pdhg_halpern.cpp
   src/gpu/gpu_memory.cpp
   src/gpu/ipm_cudss.cpp
   src/gpu/multi_device.cpp

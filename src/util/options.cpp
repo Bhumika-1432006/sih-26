@@ -1245,6 +1245,32 @@ const std::vector<OptionSpec>& Options::registry() {
          0.0,
          0.0,
          {}});
+    s.push_back(
+        {"pdhg_halpern",
+         OptionType::Bool,
+         false,
+         "Use the reflected restarted Halpern iteration for the LP PDHG engine instead of "
+         "the averaged (PDLP) scheme (#481). The Halpern form (Lu & Yang, arXiv:2407.16144) "
+         "needs no running averages, halving the vector state, and restarts on the "
+         "fixed-point residual ||z - T(z)||_P with the anchor set to the PDHG output. "
+         "CURRENTLY A STUB: pdhg_halpern_step() returns false immediately. Default OFF "
+         "until the A/B benchmark on main confirms the speedup.",
+         0.0,
+         0.0,
+         {}});
+    s.push_back(
+        {"pdhg_two_matvec",
+         OptionType::Bool,
+         false,
+         "Cache A*x_k between iterations and compute A*x_{k+1} once per step, deriving "
+         "A*x_bar = 2*A*x_{k+1} - A*x_k and A*dx = A*x_{k+1} - A*x_k by vector ops, "
+         "reducing three sparse mat-vecs per iteration to two (#479). A*x is recomputed "
+         "exactly at every restart to prevent rounding drift. "
+         "CURRENTLY A STUB: the optimisation is not active. Default OFF until the A/B "
+         "benchmark confirms per-iteration time savings on CPU and GPU.",
+         0.0,
+         0.0,
+         {}});
 
     // ---- Reporting ---------------------------------------------------------------------
     s.push_back({"log_level",
