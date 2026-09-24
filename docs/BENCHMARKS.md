@@ -406,6 +406,8 @@ Commit `fb72ab4` · machine `Windows-AMD64`
 
 Both columns time PDHG alone (`pdhg_polish=false`) on the solver's own clock, to the tolerance named, the CPU side on one thread (#487); a warm-up GPU solve absorbed CUDA's context creation before the timed ones. The GPU pays a per-iteration launch and transfer cost that a small model cannot amortise; the crossover is where the parallel products start to pay for it.
 
+> **GPU iteration counts vary run to run (#448).** The nondeterministic `atomicAdd` reductions inside the GPU mat-vec can flip a restart condition by one ULP, shifting the whole trajectory. Speedup figures here are the median of repeated solves. Do not compare a GPU iteration count against a CPU count for the same instance: the two engines take different trajectories and any comparison is meaningless. `tests/unit/test_pdhg_cuda_regression.cpp` (#451) holds both engines to the same stopping tolerance rather than to identical iterates. See also `docs/ARCHITECTURE.md` § 7.
+
 | rows×cols | CPU 1e-4 (s) | GPU 1e-4 (s) | speedup | CPU 1e-8 (s) | GPU 1e-8 (s) | speedup |
 |----------:|-------------:|-------------:|--------:|-------------:|-------------:|--------:|
 | 200×200 | 0.027 | 2.495 | 0.01× | 0.068 | 3.365 | 0.02× |
@@ -417,6 +419,8 @@ Both columns time PDHG alone (`pdhg_polish=false`) on the solver's own clock, to
 
 GPU: NVIDIA GeForce RTX 5050 Laptop GPU (compute 12.0, 8151 MiB VRAM).  
 Instances are synthetic KKT LPs with ~5 nonzeros per column (seed 42).
+
+> **GPU iteration counts vary run to run (#448, #451).** The device reductions inside the GPU mat-vec are not bitwise reproducible, and a one-ulp difference can flip a restart decision and shift the whole trajectory, which is why every GPU cell is the median of repeated solves. Do not compare a GPU iteration count against the CPU count for the same instance: the two engines take different trajectories to the same tolerance. The regression test holds them to agreement at the stopping tolerance, not to the same iterate (`tests/unit/test_pdhg_cuda_regression.cpp`); see also `docs/ARCHITECTURE.md` section 7.
 
 #### 1e-8 ceiling — sizes PDHG does not drive to project standard
 
@@ -435,12 +439,14 @@ Project standard: absolute primal ≤ 1e-7, dual ≤ 1e-7, gap ≤ 1e-8.
 
 #### 1g.1 GPU on non-synthetic instances
 
-Not yet run. Reproduce with:
+Not yet run on this tier (the datacenter card's run is in 1g.3). Reproduce with:
 
 ```
 python bench/runners/fetch_mittelmann.py
 python bench/runners/gpu_real_instances.py --binary build_gpu/sankhya
 ```
+
+> **Needs a CUDA-capable card and a CUDA build** (`-DSANKHYA_ENABLE_CUDA=ON`, the CUDA runtime installed). On a build without CUDA, or a machine whose card fails the device checks, `gpu=true` warns and runs on the CPU, so both arms of the runner would be CPU solves and the GPU column would mean nothing: do not run it there.
 
 #### 1g.2 GPU PDHG vs OR-Tools PDLP
 
@@ -468,6 +474,8 @@ Commit `fdc89c5` · machine `Linux-x86_64`
 
 Both columns time PDHG alone (`pdhg_polish=false`) on the solver's own clock, to the tolerance named, the CPU side on one thread (#487); a warm-up GPU solve absorbed CUDA's context creation before the timed ones. The GPU pays a per-iteration launch and transfer cost that a small model cannot amortise; the crossover is where the parallel products start to pay for it.
 
+> **GPU iteration counts vary run to run (#448).** The nondeterministic `atomicAdd` reductions inside the GPU mat-vec can flip a restart condition by one ULP, shifting the whole trajectory. Speedup figures here are the median of repeated solves (5 per cell). Do not compare a GPU iteration count against a CPU count for the same instance: the two engines take different trajectories and any comparison is meaningless. `tests/unit/test_pdhg_cuda_regression.cpp` (#451) holds both engines to the same stopping tolerance rather than to identical iterates. See also `docs/ARCHITECTURE.md` § 7.
+
 Each cell is the median of 5 solves; `[min–max]` shows the spread from run-to-run variance (thermal state, clock boost on the laptop GPU).
 
 | rows×cols | CPU 1e-4 (s) | GPU 1e-4 (s) | speedup | CPU 1e-8 (s) | GPU 1e-8 (s) | speedup |
@@ -481,6 +489,8 @@ Each cell is the median of 5 solves; `[min–max]` shows the spread from run-to-
 
 GPU: NVIDIA L4 (compute 8.9, 22478 MiB VRAM).  
 Instances are synthetic KKT LPs with ~5 nonzeros per column (seed 42).
+
+> **GPU iteration counts vary run to run (#448, #451).** The device reductions inside the GPU mat-vec are not bitwise reproducible, and a one-ulp difference can flip a restart decision and shift the whole trajectory, which is why every GPU cell is the median of repeated solves. Do not compare a GPU iteration count against the CPU count for the same instance: the two engines take different trajectories to the same tolerance. The regression test holds them to agreement at the stopping tolerance, not to the same iterate (`tests/unit/test_pdhg_cuda_regression.cpp`); see also `docs/ARCHITECTURE.md` section 7.
 
 #### 1e-8 ceiling — sizes PDHG does not drive to project standard
 
