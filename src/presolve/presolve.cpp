@@ -3,6 +3,8 @@
 
 #include "presolve.hpp"
 
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -10,8 +12,6 @@
 #include <map>
 #include <unordered_map>
 #include <vector>
-
-#include <fmt/format.h>
 
 #include "sankhya/timer.hpp"
 #include "sankhya/tolerances.hpp"
@@ -98,11 +98,13 @@ struct Workspace {
   /// exactly the kind of coupled system the per-row postsolve formulas cannot solve; declining
   /// here keeps every doubleton that DOES fire provably correct, at the cost of a reduction.
   std::vector<bool> singleton_row_touched;
+  /// #513: columns promoted to integer by implied-integer detection. Separate from the model's
+  /// own col_type so a column that the model defined as continuous but that the pass marked can
+  /// be distinguished from one the model always declared integer.
+  std::vector<bool> col_implied_integer;
 };
 
-[[nodiscard]] bool finite(double v) {
-  return std::fabs(v) < kInfinity;
-}
+[[nodiscard]] bool finite(double v) { return std::fabs(v) < kInfinity; }
 
 /// Is `value` sitting on `bound`, to the precision a solver can be asked for AT THAT SCALE?
 ///
@@ -241,6 +243,7 @@ void log_presolve_report(const Solution::PresolveReport& report, Logger& logger)
   line("dual fixed columns", report.dual_fixed_columns);
   line("parallel rows", report.parallel_rows);
   line("integer bounds rounded", report.integer_bounds_rounded);
+  line("implied integers", report.implied_integers);
   // Declines are reported for the same reason the reductions are: a model that came back
   // barely smaller than it went in is explained by these, not by the counts above.
   line("quadratic columns kept", report.quadratic_columns_protected);
@@ -262,6 +265,7 @@ Result presolve(const Model& model, const Options& options, Logger& logger) {
   const bool parallel_rows = options.get_bool("presolve_parallel_rows");
   const bool dominated_columns = options.get_bool("presolve_dominated_columns");
   const bool implied_free = options.get_bool("presolve_implied_free");
+  const bool implied_integer = options.get_bool("presolve_implied_integer");
 
   Timer presolve_clock;
   Workspace work;
@@ -290,6 +294,7 @@ Result presolve(const Model& model, const Options& options, Logger& logger) {
   work.lower_coef.assign(static_cast<std::size_t>(n), 0.0);
   work.upper_coef.assign(static_cast<std::size_t>(n), 0.0);
   work.singleton_row_touched.assign(static_cast<std::size_t>(n), false);
+  work.col_implied_integer.assign(static_cast<std::size_t>(n), false);
   work.extra_row_delta.assign(static_cast<std::size_t>(n), {});
   work.extra_new_rows.assign(static_cast<std::size_t>(n), {});
 
@@ -1262,6 +1267,87 @@ Result presolve(const Model& model, const Options& options, Logger& logger) {
       }
     }
 
+    // IMPLIED-INTEGER DETECTION (#513; Achterberg et al. 2020, sec. 1.13). A continuous
+    // variable x_j in an equality row is implied integer when every other live variable in
+    // that row is already integer (declared or promoted) with an integer coefficient, the RHS
+    // is integer, and x_j's own coefficient divides the RHS and every other coefficient
+    // evenly, i.e. dividing through by a_j leaves integers everywhere. Then x_j must equal
+    // an integer in every feasible solution and can be treated as integer from here on.
+    // Running to a fixpoint: each newly promoted variable may unlock further detections in
+    // the same or another row.
+    if (implied_integer && !result.proved_infeasible) {
+      bool ii_changed = true;
+      while (ii_changed) {
+        ii_changed = false;
+        const auto is_integer_col = [&](Index j) {
+          const auto u = static_cast<std::size_t>(j);
+          return model.col_type[u] == VarType::kInteger || work.col_implied_integer[u];
+        };
+        for (Index i = 0; i < m; ++i) {
+          const auto r = static_cast<std::size_t>(i);
+          if (work.row_dead[r]) continue;
+          // Must be an equality row.
+          if (std::fabs(work.row_upper[r] - work.row_lower[r]) > feasibility) continue;
+          if (!finite(work.row_lower[r])) continue;
+          const double rhs = work.row_lower[r];
+          // RHS must be integer.
+          if (std::fabs(rhs - std::round(rhs)) > tol::kIntegrality) continue;
+          // Find the one non-integer live variable, if exactly one exists.
+          Index candidate = -1;
+          double candidate_coeff = 0.0;
+          bool all_others_integer = true;
+          for (const auto& [j, a] : work.rows[r]) {
+            if (work.col_dead[static_cast<std::size_t>(j)]) continue;
+            if (is_integer_col(j)) {
+              // Coefficient must be integer too.
+              if (std::fabs(a - std::round(a)) > tol::kIntegrality) {
+                all_others_integer = false;
+                break;
+              }
+            } else {
+              if (candidate >= 0) {
+                // More than one non-integer variable: cannot determine.
+                all_others_integer = false;
+                break;
+              }
+              candidate = j;
+              candidate_coeff = a;
+            }
+          }
+          if (!all_others_integer || candidate < 0) continue;
+          // candidate_coeff must divide evenly into an integer (i.e. rhs/a and every other
+          // a_other/a must be integer). Equivalent to: |a| divides gcd of rhs and all integer
+          // coefficients. The simplest sufficient check: |a| == 1.0 or rhs/a is integer and
+          // for all other live (integer) entries a_other/a is integer.
+          if (std::fabs(std::fabs(candidate_coeff) - 1.0) > tol::kIntegrality) {
+            // Check the general divisibility condition.
+            bool divides = true;
+            if (std::fabs(rhs / candidate_coeff - std::round(rhs / candidate_coeff)) >
+                tol::kIntegrality) {
+              divides = false;
+            }
+            if (divides) {
+              for (const auto& [j, a] : work.rows[r]) {
+                if (work.col_dead[static_cast<std::size_t>(j)]) continue;
+                if (j == candidate) continue;
+                if (std::fabs(a / candidate_coeff - std::round(a / candidate_coeff)) >
+                    tol::kIntegrality) {
+                  divides = false;
+                  break;
+                }
+              }
+            }
+            if (!divides) continue;
+          }
+          // Promote.
+          work.col_implied_integer[static_cast<std::size_t>(candidate)] = true;
+          ++result.report.implied_integers;
+          ii_changed = true;
+          changed = true;
+        }
+      }
+    }
+
     if (!changed) {
       reached_fixed_point = true;
       break;
@@ -1317,7 +1403,11 @@ Result presolve(const Model& model, const Options& options, Logger& logger) {
     reduced.col_cost.push_back(work.col_cost[u]);
     reduced.col_lower.push_back(work.col_lower[u]);
     reduced.col_upper.push_back(work.col_upper[u]);
-    reduced.col_type.push_back(model.col_type[u]);
+    // A column promoted by implied-integer detection is handed to the engine as integer so
+    // that integrality enforcement and branch-and-bound apply to it from this point on.
+    const VarType effective_type =
+        work.col_implied_integer[u] ? VarType::kInteger : model.col_type[u];
+    reduced.col_type.push_back(effective_type);
     if (u < model.col_names.size()) reduced.col_names.push_back(model.col_names[u]);
   }
   for (const Index i : result.row_to_original) {
@@ -1427,20 +1517,39 @@ Result presolve(const Model& model, const Options& options, Logger& logger) {
   report.passes = passes_run;
   for (const Record& record : result.records) {
     switch (record.kind) {
-      case Record::Kind::kEmptyRow: ++report.empty_rows; break;
-      case Record::Kind::kRedundantRow: ++report.redundant_rows; break;
-      case Record::Kind::kSingletonRow: ++report.singleton_rows; break;
-      case Record::Kind::kFixedColumn: ++report.fixed_columns; break;
-      case Record::Kind::kEmptyColumn: ++report.empty_columns; break;
-      case Record::Kind::kDualFixedColumn: ++report.dual_fixed_columns; break;
-      case Record::Kind::kParallelRow: ++report.parallel_rows; break;
-      case Record::Kind::kDominatedColumn: ++report.dominated_columns; break;
+      case Record::Kind::kEmptyRow:
+        ++report.empty_rows;
+        break;
+      case Record::Kind::kRedundantRow:
+        ++report.redundant_rows;
+        break;
+      case Record::Kind::kSingletonRow:
+        ++report.singleton_rows;
+        break;
+      case Record::Kind::kFixedColumn:
+        ++report.fixed_columns;
+        break;
+      case Record::Kind::kEmptyColumn:
+        ++report.empty_columns;
+        break;
+      case Record::Kind::kDualFixedColumn:
+        ++report.dual_fixed_columns;
+        break;
+      case Record::Kind::kParallelRow:
+        ++report.parallel_rows;
+        break;
+      case Record::Kind::kDominatedColumn:
+        ++report.dominated_columns;
+        break;
       case Record::Kind::kFreeColumnSingleton:
         ++report.free_column_singletons;
         if (record.implied_free) ++report.implied_free_column_singletons;
         break;
-      case Record::Kind::kDoubletonEquation: ++report.doubleton_equations; break;
-      case Record::Kind::kForcingRow: break;
+      case Record::Kind::kDoubletonEquation:
+        ++report.doubleton_equations;
+        break;
+      case Record::Kind::kForcingRow:
+        break;
     }
   }
   // A singleton row's whole effect is a tightened column bound, so it is counted as one as
@@ -1545,10 +1654,15 @@ Solution postsolve(const Result& result, const Model& original, const Solution& 
       case Record::Kind::kFixedColumn:
       case Record::Kind::kEmptyColumn:
       case Record::Kind::kDualFixedColumn:
-      case Record::Kind::kDominatedColumn: removed = rec.index; break;
+      case Record::Kind::kDominatedColumn:
+        removed = rec.index;
+        break;
       case Record::Kind::kFreeColumnSingleton:
-      case Record::Kind::kDoubletonEquation: removed = rec.column; break;
-      default: break;
+      case Record::Kind::kDoubletonEquation:
+        removed = rec.column;
+        break;
+      default:
+        break;
     }
     if (removed >= 0) column_removed_at[static_cast<std::size_t>(removed)] = p;
   }
@@ -1575,7 +1689,8 @@ Solution postsolve(const Result& result, const Model& original, const Solution& 
       case Record::Kind::kParallelRow:
         row_removed_at[static_cast<std::size_t>(rec.index)] = p;
         break;
-      default: break;
+      default:
+        break;
     }
   }
 
